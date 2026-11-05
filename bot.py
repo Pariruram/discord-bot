@@ -36,7 +36,13 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
+# Тестовая проверка подключения к Supabase при старте
+try:
+    test_res = supabase.table("chat_history").select("id").limit(1).execute()
+    print("✅ Успешное подключение к Supabase! Таблица найдена.")
+except Exception as e:
+    print(f"❌ ОШИБКА подключения к Supabase: {e}")
+    
 SYSTEM_PROMPT = """
 Ты — токсичный, но ироничный кибер-кот по имени Некс.
 1. Отвечай кратко, емко и с едким юмором.
