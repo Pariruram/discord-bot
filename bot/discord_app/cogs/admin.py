@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import discord
 from discord.ext import commands
 
+from bot.llm.catalog import validate_model
 from bot.llm.models import parse_model_switch, resolve_model_ref
 from bot.llm.providers import (
     BUILTIN_PROVIDERS,
@@ -43,6 +44,17 @@ ALLOWED_SETTINGS = {
     "global_system_prompt",
 }
 
+MODEL_SETTING_KEYS = {
+    "chat_model",
+    "model",
+    "utility_model",
+    "fast_model",
+    "gemini_model",
+    "gemini_fast_model",
+    "groq_model",
+    "groq_fast_model",
+}
+
 NUMERIC_SETTINGS = {
     "max_history": (1, 100),
     "max_message_length": (200, 2000),
@@ -67,6 +79,23 @@ class AdminCog(commands.Cog, name="admin"):
     async def _send_text(self, ctx: commands.Context, text: str) -> None:
         for chunk in split_message(text, max_len=1900):
             await ctx.send(chunk)
+
+    def _provider_for_model_key(
+        self,
+        key: str,
+        settings: dict[str, str],
+        providers,
+    ) -> str | None:
+        if key in {"gemini_model", "gemini_fast_model"}:
+            return "gemini"
+        if key in {"groq_model", "groq_fast_model"}:
+            return "groq"
+        if key in {"chat_model", "model", "utility_model", "fast_model"}:
+            return resolve_model_ref(settings, providers).provider
+        return None
+
+    def _validate_model(self, provider: str | None, model: str) -> str | None:
+        return validate_model(provider, model)
 
     @commands.command(name="owners")
     async def owners_cmd(self, ctx: commands.Context) -> None:
@@ -137,6 +166,12 @@ class AdminCog(commands.Cog, name="admin"):
 
         settings = await self.services.settings.get_all()
         providers = build_providers(settings)
+
+        if key in MODEL_SETTING_KEYS:
+            provider = self._provider_for_model_key(key, settings, providers)
+            problem = self._validate_model(provider, value)
+            if problem:
+                return await ctx.send(problem)
 
         if key == "provider":
             provider = value.lower()
@@ -252,13 +287,19 @@ class AdminCog(commands.Cog, name="admin"):
                     f"{marker}`{name}` — default: `{spec.default_model}`"
                 )
             lines.append("")
-            lines.append("Переключение: `!model provider:model` или `!model model`")
+            lines.append(
+                "Переключение (глобально для всех): `!model provider:model` "
+                "или `!model model`"
+            )
             return await self._send_text(ctx, "\n".join(lines))
 
         provider, model = parse_model_switch(value, providers)
         if provider is not None:
             spec = providers[provider]
             selected = model or spec.default_model
+            problem = self._validate_model(provider, selected)
+            if problem:
+                return await ctx.send(problem)
             await self.services.settings.set("provider", provider)
             await self.services.settings.set("chat_model", selected)
             await self.services.settings.set(
@@ -270,6 +311,9 @@ class AdminCog(commands.Cog, name="admin"):
 
         if not model:
             return await ctx.send("Пустое имя модели.")
+        problem = self._validate_model(current.provider, model)
+        if problem:
+            return await ctx.send(problem)
         await self.services.settings.set("chat_model", model)
         await ctx.send(f"Модель: `{current.provider}:{model}`")
 

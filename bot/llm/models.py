@@ -18,6 +18,10 @@ class ModelRef:
     utility_model: str
 
     @property
+    def key(self) -> str:
+        return f"{self.provider}:{self.model}"
+
+    @property
     def label(self) -> str:
         return f"{self.provider}:{self.model}"
 
