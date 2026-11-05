@@ -1,6 +1,6 @@
 from typing import Any
 
-from bot.storage.channel_memory import ChannelMemoryManager
+from discord_bot.storage.channel_memory import ChannelMemoryManager
 
 
 class FakeRepo:

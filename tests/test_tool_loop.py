@@ -1,10 +1,10 @@
 from types import SimpleNamespace
 
-from bot.citations import Citation
-from bot.llm.models import ModelRef
-from bot.llm.providers import ProviderSpec
-from bot.llm.tool_loop import run_tool_loop
-from bot.tools.base import Tool, ToolContext, ToolRegistry
+from discord_bot.citations import Citation
+from discord_bot.llm.models import ModelRef
+from discord_bot.llm.providers import ProviderSpec
+from discord_bot.llm.tool_loop import run_tool_loop
+from discord_bot.tools.base import Tool, ToolContext, ToolRegistry
 
 SPEC = ProviderSpec(
     name="groq",

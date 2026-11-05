@@ -19,35 +19,54 @@ Discord-бот с LLM-чатом, историей пользователя, к�
 ## Структура
 
 ```
-bot/
-  main.py              запуск приложения
-  config.py            env и валидация
-  services.py          контейнер зависимостей
-  health.py            Flask health-check
-  prompts.py           system prompt
-  utils.py             split_message и парсинг
-  llm/
-    providers.py       встроенные и кастомные провайдеры
-    models.py          разрешение модели + backward compatibility
-    catalog.py         free-каталог для !models и подсказки моделей
-    model_switcher.py  глобальное переключение модели
-    errors.py          классификация ошибок LLM
-    client.py          AsyncOpenAI, таймауты, ретраи
-    tool_loop.py       безопасный multi-turn tool loop
-    utility.py         саммари и извлечение предпочтений
-  tools/
-    base.py            Tool, ToolContext, ToolRegistry
-    web_search.py      Tavily
-    current_time.py    текущее время (пример инструмента)
-  storage/
-    repository.py      Supabase через asyncio.to_thread
-    cache.py           TTL-кэш настроек
-    channel_memory.py  память каналов
-  discord_app/
-    bot.py             клиент и события
-    chat.py            пайплайн сообщения
-    cogs/admin.py      owner-команды
-    cogs/models.py     !models с кнопками free-моделей
+.
+├── discord_bot/
+│   ├── __main__.py          python -m discord_bot
+│   ├── main.py              запуск приложения
+│   ├── config.py            env и валидация
+│   ├── services.py          контейнер зависимостей
+│   ├── health.py            Flask health-check
+│   ├── prompts.py           system prompt
+│   ├── utils.py             split_message и парсинг
+│   ├── py.typed             маркер типизации
+│   ├── llm/
+│   │   ├── providers.py     встроенные и кастомные провайдеры
+│   │   ├── models.py        разрешение модели + backward compatibility
+│   │   ├── catalog.py       free-каталог для !models и подсказки
+│   │   ├── model_switcher.py глобальное переключение модели
+│   │   ├── errors.py        классификация ошибок LLM
+│   │   ├── client.py        AsyncOpenAI, таймауты, ретраи
+│   │   ├── tool_loop.py     безопасный multi-turn tool loop
+│   │   └── utility.py       саммари и извлечение предпочтений
+│   ├── tools/
+│   │   ├── base.py          Tool, ToolContext, ToolRegistry
+│   │   ├── web_search.py    Tavily
+│   │   └── current_time.py  текущее время
+│   ├── storage/
+│   │   ├── repository.py    Supabase через asyncio.to_thread
+│   │   ├── cache.py         TTL-кэш настроек
+│   │   └── channel_memory.py память каналов
+│   └── discord_app/
+│       ├── client.py        клиент и события
+│       ├── chat.py          пайплайн сообщения
+│       └── cogs/
+│           ├── admin.py     owner-команды
+│           └── models.py    !models с кнопками free-моделей
+├── tests/                   pytest, без сети и Discord
+├── .github/workflows/ci.yml GitHub Actions: lint + tests
+├── .dockerignore
+├── .env.example
+├── .gitignore
+├── .python-version          3.11.9
+├── Dockerfile
+├── Makefile
+├── README.md
+├── DEPLOY.md                что изменить на Render/Docker
+├── main.py                  production entrypoint
+├── pyproject.toml           pytest + ruff
+├── render.yaml              Render Blueprint
+├── requirements.txt
+└── requirements-dev.txt
 ```
 
 ## Установка
@@ -80,7 +99,7 @@ copy .env.example .env
 Запуск:
 
 ```bash
-python bot.py
+python main.py
 ```
 
 ## Таблицы Supabase
@@ -173,11 +192,11 @@ API-ключ (или ключ не требуется). Дубликаты уб�
 
 ## Как добавить инструмент
 
-1. Создай модуль в `bot/tools/`, например `weather.py`.
+1. Создай модуль в `discord_bot/tools/`, например `weather.py`.
 2. Экспортируй `create_tool()`, возвращающий `Tool`:
 
 ```python
-from bot.tools.base import Tool, ToolContext
+from discord_bot.tools.base import Tool, ToolContext
 
 def create_tool() -> Tool:
     async def handler(context: ToolContext, city: str) -> str:
@@ -211,5 +230,66 @@ ruff check .
 
 ## Деплой
 
-`bot.py` остаётся точкой входа, поэтому текущая команда запуска на Render /
-Hugging Face продолжает работать. Health-сервер слушает `0.0.0.0:$PORT`.
+### Точки входа
+
+- `python main.py` — production entrypoint, его использует текущий Render.
+- `python -m discord_bot` — альтернативный запуск.
+- Оба варианта вызывают `discord_bot.main.main()`.
+
+### Render
+
+В репозитории есть `render.yaml` (Blueprint) и `.python-version` с `3.11.9`.
+
+Если сервис уже создан вручную, достаточно проверить:
+
+- **Python**: `PYTHON_VERSION=3.11.9` или `.python-version`.
+- **Build command**: `pip install -r requirements.txt`.
+- **Start command**: `python main.py` — обновите его в Render.
+- **Health check path**: `/healthz`.
+- **Instance count**: `1`, иначе несколько копий бота будут дублировать ответы.
+- **Env vars**: `DISCORD_TOKEN`, `SUPABASE_URL`, `SUPABASE_KEY`, ключи нужных
+  LLM-провайдеров и `TAVILY_API_KEY`.
+- **PORT** не задавать вручную — Render передаёт его сам.
+
+Секреты в `render.yaml` помечены `sync: false`, их нужно заполнить в Dashboard.
+Health-сервер слушает `0.0.0.0:$PORT`.
+
+### Docker
+
+```bash
+docker build -t discord-ai-bot .
+docker run --env-file .env -p 7860:7860 discord-ai-bot
+```
+
+Образ работает от непривилегированного пользователя и имеет HEALTHCHECK на
+`/healthz`. Внутри контейнера `PORT` можно переопределить:
+
+```bash
+docker run --env-file .env -e PORT=8080 -p 8080:8080 discord-ai-bot
+```
+
+### CI
+
+`.github/workflows/ci.yml` запускает на push/PR:
+
+- `pip check`;
+- `ruff check .`;
+- `pytest -q`;
+- `python -m compileall`.
+
+### Что меняется при деплое
+
+- Supabase-схему менять **не нужно**, миграций нет.
+- **Render start command**: было `python bot.py`, стало `python main.py`.
+  Если используется `render.yaml`, он уже обновлён.
+- **Python**: закрепить 3.11+ через `.python-version` или `PYTHON_VERSION`.
+- **Health check**: переключить с `/` на `/healthz`; `/` тоже работает.
+- **UptimeRobot**: пинговать `https://<service>.onrender.com/healthz` раз в 5 минут.
+- **Docker**: обновить `COPY` и `CMD`, если используется свой Dockerfile.
+- **Импорты**: пакет `bot` переименован в `discord_bot`; внешние скрипты,
+  импортирующие `bot.*`, нужно обновить.
+- **Локальный запуск**: `python bot.py` → `python main.py` или
+  `python -m discord_bot`.
+- **Instance count**: `1`, чтобы не было дублирующих ответов.
+
+Полный чек-лист: [DEPLOY.md](DEPLOY.md).

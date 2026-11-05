@@ -1,4 +1,4 @@
-from bot.tools.base import (
+from discord_bot.tools.base import (
     Tool,
     ToolContext,
     ToolRegistry,

@@ -1,7 +1,7 @@
 from typing import Any
 
-from bot.tools.base import ToolContext
-from bot.tools.web_search import build_tool
+from discord_bot.tools.base import ToolContext
+from discord_bot.tools.web_search import build_tool
 
 
 def context() -> ToolContext:

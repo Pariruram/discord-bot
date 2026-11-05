@@ -1,4 +1,4 @@
-from bot.citations import Citation, format_sources
+from discord_bot.citations import Citation, format_sources
 
 
 def test_empty_citations() -> None:

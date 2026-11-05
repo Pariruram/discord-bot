@@ -1,4 +1,4 @@
-from bot.llm.model_switcher import ModelSwitcher
+from discord_bot.llm.model_switcher import ModelSwitcher
 
 
 class FakeSettings:

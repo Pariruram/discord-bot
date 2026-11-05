@@ -1,10 +1,10 @@
-from bot.llm.catalog import (
+from discord_bot.llm.catalog import (
     available_free_models,
     known_model_ids,
     suggest_model,
     validate_model,
 )
-from bot.llm.providers import ProviderSpec
+from discord_bot.llm.providers import ProviderSpec
 
 
 def spec(
