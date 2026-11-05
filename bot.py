@@ -262,6 +262,6 @@ async def on_message(message):
 
         except Exception as e:
             print(f"Ошибка: {e}")
-            await message.reply("Произошла ошибка, попробуй ещё раз.")
+            await message.reply(f"Произошла ошибка, попробуй ещё раз. {e}")
 
 bot.run(DISCORD_TOKEN)
