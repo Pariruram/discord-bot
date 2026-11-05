@@ -4,14 +4,16 @@ import asyncio
 import logging
 from datetime import datetime
 from collections import defaultdict
+from functools import lru_cache
 
 import discord
 from discord.ext import commands
-from groq import Groq
+from groq import AsyncGroq  # <--- Асинхронный клиент Groq
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from flask import Flask
 import threading
+from duckduckgo_search import DDGS
 
 load_dotenv()
 
@@ -27,7 +29,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bot")
 
-# === Flask для Render ===
+# === Flask для Render / Hugging Face ===
 app = Flask(__name__)
 
 @app.route("/")
@@ -35,7 +37,7 @@ def home():
     return "Bot is running"
 
 def run_flask():
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 7860))
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 threading.Thread(target=run_flask, daemon=True).start()
@@ -45,17 +47,55 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# === Память каналов (в RAM) ===
-# channel_id -> {"messages": [...], "summary": "..."}
+# === Память каналов в RAM (кэш поверх Supabase) ===
 channel_memory = defaultdict(lambda: {"messages": [], "summary": ""})
 
-RECENT_LIMIT = 15          # сколько свежих сообщений держать
-COMPACT_EVERY = 20         # после скольких новых сообщений делать compact
+RECENT_LIMIT = 15          
+COMPACT_EVERY = 20         
 
-# ====================== НАСТРОЙКИ ======================
+# ====================== ИНСТРУМЕНТ ПОИСКА (С КЭШЕМ) ======================
+
+@lru_cache(maxsize=100)
+def cached_web_search(query: str) -> str:
+    """Выполняет поиск в интернете с кэшированием результатов."""
+    try:
+        with DDGS() as ddgs:
+            results = [r.get('body', '') for r in ddgs.text(query, max_results=3)]
+            if not results:
+                return "Поиск не дал результатов."
+            return "\n---\n".join(results)
+    except Exception as e:
+        logger.error(f"Ошибка веб-поиска: {e}")
+        return "Ошибка доступа к поисковым системам."
+
+async def web_search(query: str) -> str:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, cached_web_search, query)
+
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Ищет актуальную информацию в интернете. Используй этот инструмент всегда, когда запрашиваемые данные выходят за рамки твоей обучающей выборки или требуют проверки актуального состояния на текущий момент.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Оптимальный поисковый запрос на русском или английском языке.",
+                    }
+                },
+                "required": ["query"],
+            },
+        },
+    }
+]
+
+# ====================== НАСТРОЙКИ И БАЗА ДАННЫХ ======================
 
 def get_setting(key: str, default: str = "") -> str:
     try:
@@ -84,8 +124,6 @@ def get_all_settings() -> dict:
         logger.error(f"get_all_settings: {e}")
         return {}
 
-# ====================== ВЛАДЕЛЬЦЫ ======================
-
 def get_owners() -> list[str]:
     try:
         raw = get_setting("owners", "[]")
@@ -101,8 +139,6 @@ def save_owners(owners: list[str]):
 
 def is_owner(user_id: str | int) -> bool:
     return str(user_id) in get_owners()
-
-# ====================== ПРОФИЛИ ======================
 
 def get_user_profile(user_id: str) -> dict:
     try:
@@ -127,8 +163,6 @@ def update_preferences(user_id: str, prefs: dict):
         }).execute()
     except Exception as e:
         logger.error(f"update_preferences: {e}")
-
-# ====================== ЛИЧНАЯ ИСТОРИЯ ======================
 
 def fetch_recent_history(user_id: str, limit: int) -> list:
     try:
@@ -156,50 +190,47 @@ def save_message(user_id: str, role: str, content: str):
     except Exception as e:
         logger.error(f"save_message: {e}")
 
-# ====================== КОНТЕКСТ КАНАЛА ======================
+# ====================== ПАМЯТЬ КАНАЛОВ С SUPABASE ======================
 
-def load_channel_summary(channel_id: str) -> str:
+def load_channel_context_from_db(channel_id: str) -> dict:
     try:
-        res = supabase.table("channel_context").select("summary").eq("channel_id", channel_id).execute()
+        res = supabase.table("channel_context").select("summary, messages").eq("channel_id", channel_id).execute()
         if res.data:
-            return res.data[0].get("summary") or ""
+            row = res.data[0]
+            return {
+                "summary": row.get("summary") or "",
+                "messages": row.get("messages") or []
+            }
     except Exception as e:
-        logger.error(f"load_channel_summary: {e}")
-    return ""
+        logger.error(f"load_channel_context_from_db: {e}")
+    return {"summary": "", "messages": []}
 
-def save_channel_summary(channel_id: str, summary: str):
+def save_channel_context_to_db(channel_id: str, summary: str, messages: list):
     try:
         supabase.table("channel_context").upsert({
             "channel_id": channel_id,
             "summary": summary,
+            "messages": messages,
             "updated_at": datetime.utcnow().isoformat()
         }).execute()
     except Exception as e:
-        logger.error(f"save_channel_summary: {e}")
+        logger.error(f"save_channel_context_to_db: {e}")
 
-def make_compact(old_summary: str, messages: list, fast_model: str) -> str:
-    """Сжимает старые сообщения + предыдущий summary в новый compact."""
-    lines = []
-    for m in messages:
-        lines.append(f"{m['author']}: {m['content']}")
+async def make_compact(old_summary: str, messages: list, fast_model: str) -> str:
+    lines = [f"{m['author']}: {m['content']}" for m in messages]
     text = "\n".join(lines)
 
     prompt = f"""Ты сжимаешь историю чата Discord в краткое резюме.
-
 Предыдущее резюме:
 {old_summary or "(пусто)"}
 
 Новые сообщения:
 {text}
 
-Сделай обновлённое краткое резюме (5–10 предложений):
-- кто о чём говорил
-- важные факты, договорённости, темы
-- без воды, только суть
-Только текст резюме, без пояснений."""
+Сделай обновлённое краткое резюме (5–10 предложений): суть, темы, договорённости. Только текст резюме."""
 
     try:
-        resp = groq_client.chat.completions.create(
+        resp = await groq_client.chat.completions.create(
             model=fast_model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=400,
@@ -210,30 +241,30 @@ def make_compact(old_summary: str, messages: list, fast_model: str) -> str:
         logger.error(f"make_compact: {e}")
         return old_summary
 
-def add_to_channel_memory(channel_id: str, author: str, content: str, fast_model: str):
-    """Добавляет сообщение в память канала и при необходимости делает compact."""
+async def add_to_channel_memory(channel_id: str, author: str, content: str, fast_model: str):
     mem = channel_memory[channel_id]
-
-    # Подгружаем summary из базы при первом сообщении
-    if not mem["summary"] and not mem["messages"]:
-        mem["summary"] = load_channel_summary(channel_id)
+    
+    # Ленивая загрузка из Supabase при первом обращении в сессии
+    if not mem["messages"] and not mem["summary"]:
+        db_data = load_channel_context_from_db(channel_id)
+        mem["summary"] = db_data["summary"]
+        mem["messages"] = db_data["messages"]
 
     mem["messages"].append({
         "author": author,
-        "content": content[:500]  # чуть обрезаем очень длинные
+        "content": content[:500]  
     })
 
-    # Если накопилось слишком много — сжимаем старые
     if len(mem["messages"]) > RECENT_LIMIT + COMPACT_EVERY:
         to_compact = mem["messages"][:-RECENT_LIMIT]
         mem["messages"] = mem["messages"][-RECENT_LIMIT:]
-        new_summary = make_compact(mem["summary"], to_compact, fast_model)
-        mem["summary"] = new_summary
-        save_channel_summary(channel_id, new_summary)
-        logger.info(f"Compact channel {channel_id}, summary len={len(new_summary)}")
+        mem["summary"] = await make_compact(mem["summary"], to_compact, fast_model)
+        logger.info(f"Compact channel {channel_id}")
+
+    # Сохраняем актуальный срез и саммари в Supabase
+    save_channel_context_to_db(channel_id, mem["summary"], mem["messages"])
 
 def get_channel_context(channel_id: str) -> str:
-    """Возвращает текст контекста канала для промпта."""
     mem = channel_memory[channel_id]
     parts = []
 
@@ -248,32 +279,21 @@ def get_channel_context(channel_id: str) -> str:
 
 # ====================== ПРЕДПОЧТЕНИЯ ======================
 
-def extract_preferences(user_message: str, current_prefs: dict, fast_model: str) -> dict:
+async def extract_preferences(user_message: str, current_prefs: dict, fast_model: str) -> dict:
     prompt = f"""
 Ты — анализатор предпочтений стиля общения.
 Текущие предпочтения: {json.dumps(current_prefs, ensure_ascii=False)}
-
 Сообщение пользователя: "{user_message}"
-
-Если пользователь ЯВНО просит изменить стиль, формат, тон, длину или язык ответа — верни ТОЛЬКО новый JSON с обновлениями.
-Если ничего не меняет — верни {{}}.
-
-Примеры:
-"пиши на бинарном" → {{"format": "binary"}}
-"отвечай очень кратко" → {{"length": "very short"}}
-"говори как пират" → {{"tone": "pirate"}}
-
-Только валидный JSON, без пояснений.
+Если пользователь ЯВНО просит изменить стиль/формат — верни ТОЛЬКО новый JSON с обновлениями, иначе {{}}. Только валидный JSON.
 """
     try:
-        resp = groq_client.chat.completions.create(
+        resp = await groq_client.chat.completions.create(
             model=fast_model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=150,
             temperature=0.1,
         )
-        text = resp.choices[0].message.content.strip()
-        text = text.replace("```json", "").replace("```", "").strip()
+        text = resp.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
         new_prefs = json.loads(text)
         if isinstance(new_prefs, dict) and new_prefs:
             return {**current_prefs, **new_prefs}
@@ -283,154 +303,80 @@ def extract_preferences(user_message: str, current_prefs: dict, fast_model: str)
 
 def build_system_prompt(global_prompt: str, preferences: dict, channel_context: str = "") -> str:
     parts = [global_prompt]
-
     if preferences:
         rules = "\n".join(f"- {k}: {v}" for k, v in preferences.items())
         parts.append(f"Строго соблюдай предпочтения пользователя:\n{rules}")
-
     if channel_context:
-        parts.append(
-            "Ты находишься в Discord-канале. Ниже контекст того, что происходило в канале. "
-            "Используй его, чтобы быть в курсе, но отвечай только на текущее обращение.\n\n"
-            + channel_context
-        )
-
+        parts.append(f"Контекст Discord-канала:\n{channel_context}")
     return "\n\n".join(parts)
-
-# ====================== РАЗБИЕНИЕ СООБЩЕНИЙ ======================
 
 def split_message(text: str, max_len: int = 1900) -> list[str]:
     if len(text) <= max_len:
         return [text]
-
     parts = []
     while text:
         if len(text) <= max_len:
             parts.append(text)
             break
-
         split_at = text.rfind("\n\n", 0, max_len)
-        if split_at == -1 or split_at < max_len // 2:
-            split_at = text.rfind("\n", 0, max_len)
-        if split_at == -1 or split_at < max_len // 2:
-            split_at = text.rfind(". ", 0, max_len)
-        if split_at == -1 or split_at < max_len // 2:
-            split_at = max_len
-
+        if split_at == -1: split_at = text.rfind("\n", 0, max_len)
+        if split_at == -1: split_at = max_len
         parts.append(text[:split_at].strip())
         text = text[split_at:].strip()
-
     return parts
 
-# ====================== КОМАНДЫ ВЛАДЕЛЬЦЕВ ======================
+# ====================== КОМАНДЫ ======================
 
 @bot.command(name="owners")
 async def owners_cmd(ctx):
-    if not isinstance(ctx.channel, discord.DMChannel):
-        return await ctx.send("Только в личных сообщениях.")
-    if not is_owner(ctx.author.id):
+    if not isinstance(ctx.channel, discord.DMChannel) or not is_owner(ctx.author.id):
         return await ctx.send("Нет доступа.")
-
     owners = get_owners()
-    if not owners:
-        return await ctx.send("Список владельцев пуст.")
-    text = "\n".join(f"- `{oid}`" for oid in owners)
-    await ctx.send(f"**Владельцы бота:**\n{text}")
+    await ctx.send(f"**Владельцы:**\n" + "\n".join(f"- `{o}`" for o in owners))
 
 @bot.command(name="owner")
 async def owner_cmd(ctx, action: str = None, user_id: str = None):
-    if not isinstance(ctx.channel, discord.DMChannel):
-        return await ctx.send("Только в личных сообщениях.")
-    if not is_owner(ctx.author.id):
+    if not isinstance(ctx.channel, discord.DMChannel) or not is_owner(ctx.author.id):
         return await ctx.send("Нет доступа.")
-
-    if action is None:
-        return await ctx.send(
-            "Использование:\n"
-            "`!owners` — список\n"
-            "`!owner add <id>` — добавить\n"
-            "`!owner remove <id>` — удалить"
-        )
-
-    action = action.lower()
     owners = get_owners()
-
-    if action == "add":
-        if not user_id or not user_id.isdigit():
-            return await ctx.send("Укажи числовой Discord ID.")
-        if user_id in owners:
-            return await ctx.send("Этот пользователь уже владелец.")
+    if action == "add" and user_id and user_id.isdigit() and user_id not in owners:
         owners.append(user_id)
         save_owners(owners)
-        return await ctx.send(f"Добавлен владелец: `{user_id}`")
-
-    if action == "remove":
-        if not user_id or not user_id.isdigit():
-            return await ctx.send("Укажи числовой Discord ID.")
-        if user_id not in owners:
-            return await ctx.send("Такого владельца нет.")
-        if len(owners) <= 1:
-            return await ctx.send("Нельзя удалить последнего владельца.")
+        return await ctx.send(f"Добавлен: `{user_id}`")
+    elif action == "remove" and user_id in owners and len(owners) > 1:
         owners.remove(user_id)
         save_owners(owners)
-        return await ctx.send(f"Владелец `{user_id}` удалён.")
-
-    await ctx.send("Доступные действия: `add`, `remove`")
+        return await ctx.send(f"Удален: `{user_id}`")
+    await ctx.send("Использование: `!owner add <id>` или `!owner remove <id>`")
 
 @bot.command(name="settings")
 async def settings_cmd(ctx):
-    if not isinstance(ctx.channel, discord.DMChannel):
-        return await ctx.send("Только в личных сообщениях.")
-    if not is_owner(ctx.author.id):
+    if not isinstance(ctx.channel, discord.DMChannel) or not is_owner(ctx.author.id):
         return await ctx.send("Нет доступа.")
-
     settings = get_all_settings()
-    if not settings:
-        return await ctx.send("Настройки пусты.")
-    lines = [f"**{k}** = `{v}`" for k, v in settings.items()]
-    await ctx.send("**Текущие настройки:**\n" + "\n".join(lines))
+    await ctx.send("**Настройки:**\n" + "\n".join(f"**{k}** = `{v}`" for k, v in settings.items()))
 
 @bot.command(name="set")
 async def set_cmd(ctx, key: str = None, *, value: str = None):
-    if not isinstance(ctx.channel, discord.DMChannel):
-        return await ctx.send("Только в личных сообщениях.")
-    if not is_owner(ctx.author.id):
-        return await ctx.send("Нет доступа.")
-
-    allowed = {"model", "fast_model", "max_history", "max_message_length"}
-    if key not in allowed:
-        return await ctx.send(f"Доступные ключи: {', '.join(allowed)}")
-    if not value:
-        return await ctx.send(f"Использование: `!set {key} <значение>`")
-
+    if not isinstance(ctx.channel, discord.DMChannel) or not is_owner(ctx.author.id) or key not in {"model", "fast_model", "max_history", "max_message_length"}:
+        return await ctx.send("Неверный ключ или нет доступа.")
     set_setting(key, value.strip())
-    await ctx.send(f"`{key}` → `{value.strip()}`")
+    await ctx.send(f"`{key}` изменен.")
 
 @bot.command(name="system")
 async def system_cmd(ctx, *, arg: str = None):
-    if not isinstance(ctx.channel, discord.DMChannel):
-        return await ctx.send("Только в личных сообщениях.")
-    if not is_owner(ctx.author.id):
+    if not isinstance(ctx.channel, discord.DMChannel) or not is_owner(ctx.author.id):
         return await ctx.send("Нет доступа.")
-
     if not arg:
-        current = get_setting("global_system_prompt")
-        return await ctx.send(f"**Глобальный System Prompt:**\n```\n{current}\n```")
-
+        return await ctx.send(f"```\n{get_setting('global_system_prompt', 'Ты — ассистент.')}\n```")
     if arg.lower().startswith("set "):
-        new_prompt = arg[4:].strip()
-        if not new_prompt:
-            return await ctx.send("Укажи текст после `set`.")
-        set_setting("global_system_prompt", new_prompt)
-        return await ctx.send("Глобальный System Prompt обновлён.")
-
+        set_setting("global_system_prompt", arg[4:].strip())
+        return await ctx.send("Prompt обновлен.")
     if arg.lower() == "reset":
-        set_setting("global_system_prompt", "Ты — полезный ассистент. Отвечай на языке пользователя.")
-        return await ctx.send("System Prompt сброшен.")
+        set_setting("global_system_prompt", "Ты — полезный ассистент.")
+        return await ctx.send("Сброшено.")
 
-    await ctx.send("Использование:\n`!system`\n`!system set <текст>`\n`!system reset`")
-
-# ====================== ОСНОВНОЙ ОБРАБОТЧИК ======================
+# ====================== ОБРАБОТЧИК СООБЩЕНИЙ ======================
 
 @bot.event
 async def on_ready():
@@ -442,13 +388,10 @@ async def on_message(message: discord.Message):
         return
 
     await bot.process_commands(message)
-
-    # Игнорируем команды
     if message.content.startswith("!"):
         return
 
-    loop = asyncio.get_running_loop()
-    settings = await loop.run_in_executor(None, get_all_settings)
+    settings = get_all_settings()
     fast_model = settings.get("fast_model", "openai/gpt-oss-20b")
     model = settings.get("model", "openai/gpt-oss-120b")
     max_history = int(settings.get("max_history", 12))
@@ -458,73 +401,72 @@ async def on_message(message: discord.Message):
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_mentioned = bot.user.mentioned_in(message)
 
-    # === 1. Всегда слушаем канал (не ЛС) и кладём в память ===
     if not is_dm:
-        channel_id = str(message.channel.id)
-        author_name = message.author.display_name
-        content = message.content.strip()
-        if content:
-            await loop.run_in_executor(
-                None,
-                add_to_channel_memory,
-                channel_id,
-                author_name,
-                content,
-                fast_model
-            )
+        await add_to_channel_memory(str(message.channel.id), message.author.display_name, message.content.strip(), fast_model)
 
-    # === 2. Отвечаем только на упоминание или в ЛС ===
     if not (is_mentioned or is_dm):
         return
 
     async with message.channel.typing():
         try:
             user_id = str(message.author.id)
-            clean = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
-            if not clean:
-                clean = "Привет"
+            clean = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip() or "Привет"
 
-            # Профиль и предпочтения
-            profile = await loop.run_in_executor(None, get_user_profile, user_id)
+            profile = get_user_profile(user_id)
             current_prefs = profile.get("preferences") or {}
-
-            updated_prefs = await loop.run_in_executor(
-                None, extract_preferences, clean, current_prefs, fast_model
-            )
+            updated_prefs = await extract_preferences(clean, current_prefs, fast_model)
             if updated_prefs != current_prefs:
-                await loop.run_in_executor(None, update_preferences, user_id, updated_prefs)
+                update_preferences(user_id, updated_prefs)
                 current_prefs = updated_prefs
 
-            # Личная история
-            await loop.run_in_executor(None, save_message, user_id, "user", clean)
-            history = await loop.run_in_executor(None, fetch_recent_history, user_id, max_history)
+            save_message(user_id, "user", clean)
+            history = fetch_recent_history(user_id, max_history)
+            channel_context = get_channel_context(str(message.channel.id)) if not is_dm else ""
 
-            # Контекст канала
-            channel_context = ""
-            if not is_dm:
-                channel_context = get_channel_context(str(message.channel.id))
-
-            # Промпт
             system_prompt = build_system_prompt(global_prompt, current_prefs, channel_context)
             messages = [{"role": "system", "content": system_prompt}] + history
 
-            # Запрос к модели
-            response = await loop.run_in_executor(
-                None,
-                lambda: groq_client.chat.completions.create(
+            # === Multi-turn Tool Use цикл (до 3 шагов поиска) ===
+            for _ in range(3):
+                response = await groq_client.chat.completions.create(
                     model=model,
                     messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
                     max_tokens=1200,
                     temperature=0.75,
                 )
-            )
+                response_message = response.choices[0].message
 
-            reply = response.choices[0].message.content.strip()
-            await loop.run_in_executor(None, save_message, user_id, "assistant", reply)
+                if not response_message.tool_calls:
+                    reply = response_message.content.strip()
+                    break
 
-            # Отправка частями
-            chunks = split_message(reply, max_len=max_len)
-            for i, chunk in enumerate(chunks):
+                messages.append(response_message)
+
+                for tool_call in response_message.tool_calls:
+                    if tool_call.function.name == "web_search":
+                        try:
+                            args = json.loads(tool_call.function.arguments)
+                            query = args.get("query", "")
+                            logger.info(f"🤖 Поиск: {query}")
+                            search_result = await web_search(query)
+                        except Exception as ex:
+                            logger.error(f"Ошибка парсинга аргументов поиска: {ex}")
+                            search_result = "Ошибка выполнения поиска."
+
+                        messages.append({
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": "web_search",
+                            "content": search_result,
+                        })
+            else:
+                reply = "Извини, я сделал слишком много поисковых запросов и запутался."
+
+            save_message(user_id, "assistant", reply)
+
+            for i, chunk in enumerate(split_message(reply, max_len=max_len)):
                 if i == 0:
                     await message.reply(chunk)
                 else:
