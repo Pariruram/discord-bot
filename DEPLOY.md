@@ -10,6 +10,21 @@
 - Dockerfile, `render.yaml`, CI и Makefile обновлены;
 - схема Supabase и переменные окружения **не изменились**.
 
+## 0. Git после перезаписи истории
+
+История ветки `main` перезаписана, поэтому обычный push будет отклонён.
+
+- [ ] Сохранить safety-ветку: `git push -u origin backup/pre-message-rewrite`.
+- [ ] Отправить переписанный `main`:
+      `git push --force-with-lease origin main`.
+- [ ] Убедиться, что GitHub показывает новые commit messages.
+- [ ] Не делать force-push, пока не проверен деплой на Render.
+
+Локальные safety-ветки:
+
+- `backup/pre-message-rewrite` — история до перезаписи сообщений;
+- `production-ready` — коммит с переименованием и deploy-файлами.
+
 ## 1. Render
 
 Открыть сервис → Settings:
