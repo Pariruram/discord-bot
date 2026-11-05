@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 from collections import defaultdict
 from functools import lru_cache
+from tavily import AsyncTavilyClient
 
 import discord
 from discord.ext import commands
@@ -28,7 +29,7 @@ logging.basicConfig(
     force=True
 )
 logger = logging.getLogger("bot")
-
+tavily_client = AsyncTavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 # === Flask для Render / Hugging Face ===
 app = Flask(__name__)
 
@@ -56,34 +57,42 @@ COMPACT_EVERY = 20
 
 # ====================== ИНСТРУМЕНТ ПОИСКА ======================
 
-@lru_cache(maxsize=100)
-def cached_web_search(query: str) -> str:
-    try:
-        with DDGS() as ddgs:
-            results = [r.get('body', '') for r in ddgs.text(query, max_results=3)]
-            if not results:
-                return "Поиск не дал результатов."
-            return "\n---\n".join(results)
-    except Exception as e:
-        logger.error(f"Ошибка веб-поиска: {e}")
-        return "Ошибка выполнения веб-поиска."
-
 async def web_search(query: str) -> str:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, cached_web_search, query)
+    try:
+        # Асинхронный поиск через официальный SDK Tavily
+        response = await tavily_client.search(
+            query=query, 
+            max_results=3,
+            search_depth="basic" # "advanced" если нужен более глубокий поиск
+        )
+        results = [r.get('content', '') for r in response.get('results', [])]
+        if not results:
+            return "Поиск не дал результатов."
+        return "\n---\n".join(results)
+    except Exception as e:
+        logger.error(f"Ошибка Tavily поиска: {e}")
+        return "Ошибка выполнения веб-поиска."
 
 tools = [
     {
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Ищет актуальную информацию в интернете. Используй этот инструмент, когда запрашиваемые данные выходят за рамки твоей обучающей выборки.",
+            "description": (
+                "Используй ТОЛЬКО когда пользователь явно просит найти свежие данные, "
+                "конкретные новости, текущие даты, актуальные курсы или фактчек "
+                "событий после 2024 года. НЕ используй для общих вопросов, программирования, "
+                "размышлений или бытовых тем."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Оптимальный поисковый запрос на русском или английском языке.",
+                        "description": (
+                            "Точный, лаконичный поисковый запрос (2-4 ключевых слова без вводных слов). "
+                            "Пример: 'Elon Musk news November 2026' вместо 'свежие новости про Элона Маска'."
+                        ),
                     }
                 },
                 "required": ["query"],
@@ -91,7 +100,6 @@ tools = [
         },
     }
 ]
-
 # ====================== БАЗА ДАННЫХ И НАСТРОЙКИ ======================
 
 def get_setting(key: str, default: str = "") -> str:
