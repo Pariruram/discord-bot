@@ -8,7 +8,7 @@ from functools import lru_cache
 
 import discord
 from discord.ext import commands
-from groq import AsyncGroq  # <--- Асинхронный клиент Groq
+from groq import AsyncGroq
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from flask import Flask
@@ -50,17 +50,14 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# === Память каналов в RAM (кэш поверх Supabase) ===
 channel_memory = defaultdict(lambda: {"messages": [], "summary": ""})
-
 RECENT_LIMIT = 15          
 COMPACT_EVERY = 20         
 
-# ====================== ИНСТРУМЕНТ ПОИСКА (С КЭШЕМ) ======================
+# ====================== ИНСТРУМЕНТ ПОИСКА ======================
 
 @lru_cache(maxsize=100)
 def cached_web_search(query: str) -> str:
-    """Выполняет поиск в интернете с кэшированием результатов."""
     try:
         with DDGS() as ddgs:
             results = [r.get('body', '') for r in ddgs.text(query, max_results=3)]
@@ -69,7 +66,7 @@ def cached_web_search(query: str) -> str:
             return "\n---\n".join(results)
     except Exception as e:
         logger.error(f"Ошибка веб-поиска: {e}")
-        return "Ошибка доступа к поисковым системам."
+        return "Ошибка выполнения веб-поиска."
 
 async def web_search(query: str) -> str:
     loop = asyncio.get_running_loop()
@@ -80,7 +77,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Ищет актуальную информацию в интернете. Используй этот инструмент всегда, когда запрашиваемые данные выходят за рамки твоей обучающей выборки или требуют проверки актуального состояния на текущий момент.",
+            "description": "Ищет актуальную информацию в интернете. Используй этот инструмент, когда запрашиваемые данные выходят за рамки твоей обучающей выборки.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -95,7 +92,7 @@ tools = [
     }
 ]
 
-# ====================== НАСТРОЙКИ И БАЗА ДАННЫХ ======================
+# ====================== БАЗА ДАННЫХ И НАСТРОЙКИ ======================
 
 def get_setting(key: str, default: str = "") -> str:
     try:
@@ -111,7 +108,7 @@ def set_setting(key: str, value: str):
         supabase.table("bot_settings").upsert({
             "key": key,
             "value": value,
-            "updated_at": datetime.utcnow().isoformat()
+            "updated_at": datetime.now(datetime.UTC).isoformat()
         }).execute()
     except Exception as e:
         logger.error(f"set_setting({key}): {e}")
@@ -159,7 +156,7 @@ def update_preferences(user_id: str, prefs: dict):
         supabase.table("user_profiles").upsert({
             "user_id": user_id,
             "preferences": prefs,
-            "updated_at": datetime.utcnow().isoformat()
+            "updated_at": datetime.now(datetime.UTC).isoformat()
         }).execute()
     except Exception as e:
         logger.error(f"update_preferences: {e}")
@@ -174,8 +171,7 @@ def fetch_recent_history(user_id: str, limit: int) -> list:
             .limit(limit)
             .execute()
         )
-        history = [{"role": r["role"], "content": r["content"]} for r in res.data]
-        return list(reversed(history))
+        return list(reversed([{"role": r["role"], "content": r["content"]} for r in res.data]))
     except Exception as e:
         logger.error(f"fetch_recent_history: {e}")
         return []
@@ -190,7 +186,7 @@ def save_message(user_id: str, role: str, content: str):
     except Exception as e:
         logger.error(f"save_message: {e}")
 
-# ====================== ПАМЯТЬ КАНАЛОВ С SUPABASE ======================
+# ====================== ПАМЯТЬ КАНАЛОВ ======================
 
 def load_channel_context_from_db(channel_id: str) -> dict:
     try:
@@ -211,24 +207,14 @@ def save_channel_context_to_db(channel_id: str, summary: str, messages: list):
             "channel_id": channel_id,
             "summary": summary,
             "messages": messages,
-            "updated_at": datetime.utcnow().isoformat()
+            "updated_at": datetime.now(datetime.UTC).isoformat()
         }).execute()
     except Exception as e:
         logger.error(f"save_channel_context_to_db: {e}")
 
 async def make_compact(old_summary: str, messages: list, fast_model: str) -> str:
     lines = [f"{m['author']}: {m['content']}" for m in messages]
-    text = "\n".join(lines)
-
-    prompt = f"""Ты сжимаешь историю чата Discord в краткое резюме.
-Предыдущее резюме:
-{old_summary or "(пусто)"}
-
-Новые сообщения:
-{text}
-
-Сделай обновлённое краткое резюме (5–10 предложений): суть, темы, договорённости. Только текст резюме."""
-
+    prompt = f"Резюме чата:\n{old_summary}\nНовые:\n{('\n'.join(lines))}\nСделай краткий итог (суть, темы)."
     try:
         resp = await groq_client.chat.completions.create(
             model=fast_model,
@@ -243,49 +229,34 @@ async def make_compact(old_summary: str, messages: list, fast_model: str) -> str
 
 async def add_to_channel_memory(channel_id: str, author: str, content: str, fast_model: str):
     mem = channel_memory[channel_id]
-    
-    # Ленивая загрузка из Supabase при первом обращении в сессии
     if not mem["messages"] and not mem["summary"]:
         db_data = load_channel_context_from_db(channel_id)
         mem["summary"] = db_data["summary"]
         mem["messages"] = db_data["messages"]
 
-    mem["messages"].append({
-        "author": author,
-        "content": content[:500]  
-    })
+    mem["messages"].append({"author": author, "content": content[:500]})
 
     if len(mem["messages"]) > RECENT_LIMIT + COMPACT_EVERY:
         to_compact = mem["messages"][:-RECENT_LIMIT]
         mem["messages"] = mem["messages"][-RECENT_LIMIT:]
         mem["summary"] = await make_compact(mem["summary"], to_compact, fast_model)
-        logger.info(f"Compact channel {channel_id}")
 
-    # Сохраняем актуальный срез и саммари в Supabase
     save_channel_context_to_db(channel_id, mem["summary"], mem["messages"])
 
 def get_channel_context(channel_id: str) -> str:
     mem = channel_memory[channel_id]
     parts = []
-
     if mem["summary"]:
-        parts.append(f"Краткое резюме предыдущего общения в канале:\n{mem['summary']}")
-
+        parts.append(f"Резюме канала:\n{mem['summary']}")
     if mem["messages"]:
         lines = [f"{m['author']}: {m['content']}" for m in mem["messages"]]
-        parts.append("Последние сообщения в канале:\n" + "\n".join(lines))
-
+        parts.append("Последние сообщения:\n" + "\n".join(lines))
     return "\n\n".join(parts) if parts else ""
 
-# ====================== ПРЕДПОЧТЕНИЯ ======================
+# ====================== ПРЕДПОЧТЕНИЯ И КОМАНДЫ ======================
 
 async def extract_preferences(user_message: str, current_prefs: dict, fast_model: str) -> dict:
-    prompt = f"""
-Ты — анализатор предпочтений стиля общения.
-Текущие предпочтения: {json.dumps(current_prefs, ensure_ascii=False)}
-Сообщение пользователя: "{user_message}"
-Если пользователь ЯВНО просит изменить стиль/формат — верни ТОЛЬКО новый JSON с обновлениями, иначе {{}}. Только валидный JSON.
-"""
+    prompt = f"Текущие предпочтения: {json.dumps(current_prefs)}\nСообщение: '{user_message}'\nВерни JSON с изменениями или {{}}."
     try:
         resp = await groq_client.chat.completions.create(
             model=fast_model,
@@ -304,10 +275,9 @@ async def extract_preferences(user_message: str, current_prefs: dict, fast_model
 def build_system_prompt(global_prompt: str, preferences: dict, channel_context: str = "") -> str:
     parts = [global_prompt]
     if preferences:
-        rules = "\n".join(f"- {k}: {v}" for k, v in preferences.items())
-        parts.append(f"Строго соблюдай предпочтения пользователя:\n{rules}")
+        parts.append("Предпочтения:\n" + "\n".join(f"- {k}: {v}" for k, v in preferences.items()))
     if channel_context:
-        parts.append(f"Контекст Discord-канала:\n{channel_context}")
+        parts.append(channel_context)
     return "\n\n".join(parts)
 
 def split_message(text: str, max_len: int = 1900) -> list[str]:
@@ -325,14 +295,11 @@ def split_message(text: str, max_len: int = 1900) -> list[str]:
         text = text[split_at:].strip()
     return parts
 
-# ====================== КОМАНДЫ ======================
-
 @bot.command(name="owners")
 async def owners_cmd(ctx):
     if not isinstance(ctx.channel, discord.DMChannel) or not is_owner(ctx.author.id):
         return await ctx.send("Нет доступа.")
-    owners = get_owners()
-    await ctx.send(f"**Владельцы:**\n" + "\n".join(f"- `{o}`" for o in owners))
+    await ctx.send(f"**Владельцы:** {get_owners()}")
 
 @bot.command(name="owner")
 async def owner_cmd(ctx, action: str = None, user_id: str = None):
@@ -353,8 +320,7 @@ async def owner_cmd(ctx, action: str = None, user_id: str = None):
 async def settings_cmd(ctx):
     if not isinstance(ctx.channel, discord.DMChannel) or not is_owner(ctx.author.id):
         return await ctx.send("Нет доступа.")
-    settings = get_all_settings()
-    await ctx.send("**Настройки:**\n" + "\n".join(f"**{k}** = `{v}`" for k, v in settings.items()))
+    await ctx.send(f"**Настройки:**\n{get_all_settings()}")
 
 @bot.command(name="set")
 async def set_cmd(ctx, key: str = None, *, value: str = None):
@@ -426,24 +392,19 @@ async def on_message(message: discord.Message):
             system_prompt = build_system_prompt(global_prompt, current_prefs, channel_context)
             messages = [{"role": "system", "content": system_prompt}] + history
 
-            # === Multi-turn Tool Use цикл (до 3 шагов поиска) ===
-            for _ in range(3):
-                response = await groq_client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    tools=tools,
-                    tool_choice="auto",
-                    max_tokens=1200,
-                    temperature=0.75,
-                )
-                response_message = response.choices[0].message
+            # === Безопасный вызов инструментов (максимум 1 шаг поиска) ===
+            response = await groq_client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                max_tokens=1200,
+                temperature=0.75,
+            )
+            response_message = response.choices[0].message
 
-                if not response_message.tool_calls:
-                    reply = response_message.content.strip()
-                    break
-
+            if response_message.tool_calls:
                 messages.append(response_message)
-
                 for tool_call in response_message.tool_calls:
                     if tool_call.function.name == "web_search":
                         try:
@@ -452,7 +413,7 @@ async def on_message(message: discord.Message):
                             logger.info(f"🤖 Поиск: {query}")
                             search_result = await web_search(query)
                         except Exception as ex:
-                            logger.error(f"Ошибка парсинга аргументов поиска: {ex}")
+                            logger.error(f"Ошибка поиска: {ex}")
                             search_result = "Ошибка выполнения поиска."
 
                         messages.append({
@@ -461,8 +422,17 @@ async def on_message(message: discord.Message):
                             "name": "web_search",
                             "content": search_result,
                         })
+
+                # Финальный ответ после поиска
+                final_response = await groq_client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=1200,
+                    temperature=0.75,
+                )
+                reply = final_response.choices[0].message.content.strip()
             else:
-                reply = "Извини, я сделал слишком много поисковых запросов и запутался."
+                reply = response_message.content.strip()
 
             save_message(user_id, "assistant", reply)
 

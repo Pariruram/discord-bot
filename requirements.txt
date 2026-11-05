@@ -3,4 +3,4 @@ groq
 supabase
 python-dotenv
 flask
-duckduckgo-search
+ddgs
