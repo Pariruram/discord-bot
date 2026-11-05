@@ -13,7 +13,7 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 from flask import Flask
 import threading
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 load_dotenv()
 
