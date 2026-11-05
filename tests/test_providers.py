@@ -1,4 +1,4 @@
-from bot.llm.providers import BUILTIN_PROVIDERS, build_providers, spec_from_dict
+from discord_bot.llm.providers import BUILTIN_PROVIDERS, build_providers, spec_from_dict
 
 
 def test_custom_provider_is_added() -> None:

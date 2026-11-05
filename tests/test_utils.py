@@ -1,4 +1,4 @@
-from bot.utils import as_bool, safe_int, split_message
+from discord_bot.utils import as_bool, safe_int, split_message
 
 
 def test_empty_message() -> None:

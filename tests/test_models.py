@@ -1,5 +1,5 @@
-from bot.llm.models import parse_model_switch, resolve_model_ref
-from bot.llm.providers import ProviderSpec
+from discord_bot.llm.models import parse_model_switch, resolve_model_ref
+from discord_bot.llm.providers import ProviderSpec
 
 PROVIDERS = {
     "gemini": ProviderSpec(

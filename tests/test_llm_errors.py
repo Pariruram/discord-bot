@@ -1,4 +1,4 @@
-from bot.llm.errors import (
+from discord_bot.llm.errors import (
     ErrorKind,
     build_llm_error,
     missing_api_key_error,

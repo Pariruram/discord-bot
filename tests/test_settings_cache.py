@@ -1,6 +1,6 @@
 from typing import Any
 
-from bot.storage.cache import SettingsCache
+from discord_bot.storage.cache import SettingsCache
 
 
 class FakeRepo:
