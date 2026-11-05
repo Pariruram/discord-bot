@@ -2,7 +2,7 @@ import os
 import json
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import defaultdict
 from functools import lru_cache
 
@@ -13,7 +13,7 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 from flask import Flask
 import threading
-from ddgs import DDGS
+from duckduckgo_search import DDGS
 
 load_dotenv()
 
@@ -108,7 +108,7 @@ def set_setting(key: str, value: str):
         supabase.table("bot_settings").upsert({
             "key": key,
             "value": value,
-            "updated_at": datetime.now(datetime.UTC).isoformat()
+            "updated_at": datetime.now(timezone.utc).isoformat()
         }).execute()
     except Exception as e:
         logger.error(f"set_setting({key}): {e}")
@@ -156,7 +156,7 @@ def update_preferences(user_id: str, prefs: dict):
         supabase.table("user_profiles").upsert({
             "user_id": user_id,
             "preferences": prefs,
-            "updated_at": datetime.now(datetime.UTC).isoformat()
+            "updated_at": datetime.now(timezone.utc).isoformat()
         }).execute()
     except Exception as e:
         logger.error(f"update_preferences: {e}")
@@ -207,7 +207,7 @@ def save_channel_context_to_db(channel_id: str, summary: str, messages: list):
             "channel_id": channel_id,
             "summary": summary,
             "messages": messages,
-            "updated_at": datetime.now(datetime.UTC).isoformat()
+            "updated_at": datetime.now(timezone.utc).isoformat()
         }).execute()
     except Exception as e:
         logger.error(f"save_channel_context_to_db: {e}")
@@ -265,11 +265,13 @@ async def extract_preferences(user_message: str, current_prefs: dict, fast_model
             temperature=0.1,
         )
         text = resp.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
+        if not text:
+            return current_prefs
         new_prefs = json.loads(text)
         if isinstance(new_prefs, dict) and new_prefs:
             return {**current_prefs, **new_prefs}
     except Exception as e:
-        logger.error(f"extract_preferences: {e}")
+        logger.error(f"extract_preferences error: {e}")
     return current_prefs
 
 def build_system_prompt(global_prompt: str, preferences: dict, channel_context: str = "") -> str:
@@ -392,19 +394,25 @@ async def on_message(message: discord.Message):
             system_prompt = build_system_prompt(global_prompt, current_prefs, channel_context)
             messages = [{"role": "system", "content": system_prompt}] + history
 
-            # === Безопасный вызов инструментов (максимум 1 шаг поиска) ===
-            response = await groq_client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                max_tokens=1200,
-                temperature=0.75,
-            )
-            response_message = response.choices[0].message
+            # === Безопасный Multi-turn Tool Use с пробросом tools ===
+            reply = "Извини, не удалось сформировать ответ."
+            for _ in range(2):
+                response = await groq_client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    max_tokens=1200,
+                    temperature=0.75,
+                )
+                response_message = response.choices[0].message
 
-            if response_message.tool_calls:
+                if not response_message.tool_calls:
+                    reply = response_message.content.strip()
+                    break
+
                 messages.append(response_message)
+
                 for tool_call in response_message.tool_calls:
                     if tool_call.function.name == "web_search":
                         try:
@@ -422,17 +430,6 @@ async def on_message(message: discord.Message):
                             "name": "web_search",
                             "content": search_result,
                         })
-
-                # Финальный ответ после поиска
-                final_response = await groq_client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    max_tokens=1200,
-                    temperature=0.75,
-                )
-                reply = final_response.choices[0].message.content.strip()
-            else:
-                reply = response_message.content.strip()
 
             save_message(user_id, "assistant", reply)
 
