@@ -134,10 +134,10 @@ def extract_preferences(user_message: str, current_prefs: dict) -> dict:
 """
     try:
         resp = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=150,
-            temperature=0.1,
+            max_tokens=400,
+            temperature=0.8,
         )
         text = resp.choices[0].message.content.strip()
         text = text.replace("```json", "").replace("```", "").strip()
