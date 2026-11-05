@@ -102,7 +102,7 @@ async def on_message(message):
                 response = await loop.run_in_executor(
                     None, 
                     lambda: groq_client.chat.completions.create(
-                        model="llama-3.3-70b-versatile",
+                        model="openai/gpt-oss-120b",
                         messages=messages_to_send,
                         max_tokens=400,
                         temperature=0.8,
