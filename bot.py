@@ -1,11 +1,12 @@
 import os
-import threading
+import asyncio
 import discord
 from discord.ext import commands
 from groq import Groq
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from flask import Flask
+import threading
 
 load_dotenv()
 
@@ -14,7 +15,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# Настройка Flask для удержания Web Service бесплатным
+# Настройка Flask для Render
 app = Flask(__name__)
 
 @app.route('/')
@@ -23,10 +24,10 @@ def home():
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
-# Запускаем Flask в отдельном потоке, чтобы он не блокировал бота
-threading.Thread(target=run_flask).start()
+# Запуск Flask в фоне
+threading.Thread(target=run_flask, daemon=True).start()
 
 # Инициализация бота
 intents = discord.Intents.default()
@@ -68,7 +69,7 @@ def save_message_to_db(user_id: str, role: str, content: str):
 
 @bot.event
 async def on_ready():
-    print(f'Бот {bot.user} запущен на Web Service и подключен к Supabase!')
+    print(f'Бот {bot.user} успешно запущен и держит соединение!')
 
 @bot.event
 async def on_message(message):
@@ -84,25 +85,34 @@ async def on_message(message):
                 if not clean_content:
                     clean_content = "Привет"
 
-                save_message_to_db(user_id_str, "user", clean_content)
-                user_history = fetch_user_history_from_db(user_id_str)
+                # Выносим блокирующие запросы в отдельный поток, чтобы не вешать Discord Gateway
+                loop = asyncio.get_running_loop()
+                
+                await loop.run_in_executor(None, save_message_to_db, user_id_str, "user", clean_content)
+                user_history = await loop.run_in_executor(None, fetch_user_history_from_db, user_id_str)
+                
                 messages_to_send = [{"role": "system", "content": SYSTEM_PROMPT}] + user_history
 
-                response = groq_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=messages_to_send,
-                    max_tokens=400,
-                    temperature=0.8,
+                response = await loop.run_in_executor(
+                    None, 
+                    lambda: groq_client.chat.completions.create(
+                        model="llama-3.3-70b-versatile",
+                        messages=messages_to_send,
+                        max_tokens=400,
+                        temperature=0.8,
+                    )
                 )
 
                 bot_reply = response.choices[0].message.content
-                save_message_to_db(user_id_str, "assistant", bot_reply)
+                await loop.run_in_executor(None, save_message_to_db, user_id_str, "assistant", bot_reply)
+                
                 await message.reply(bot_reply)
 
             except Exception as e:
                 print(f"Ошибка: {e}")
                 await message.reply("У меня сбой системы... Дай передохнуть. 🐱")
 
+    # Важно: чтобы работали команды и бот не зависал на ивентах
     await bot.process_commands(message)
 
 bot.run(DISCORD_TOKEN)
