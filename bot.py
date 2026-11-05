@@ -42,7 +42,7 @@ try:
     print("✅ Успешное подключение к Supabase! Таблица найдена.")
 except Exception as e:
     print(f"❌ ОШИБКА подключения к Supabase: {e}")
-    
+
 SYSTEM_PROMPT = """
 Ты — токсичный, но ироничный кибер-кот по имени Некс.
 1. Отвечай кратко, емко и с едким юмором.
@@ -116,7 +116,7 @@ async def on_message(message):
 
             except Exception as e:
                 print(f"Ошибка: {e}")
-                await message.reply("У меня сбой системы... Дай передохнуть. 🐱")
+                await message.reply(f"У меня сбой системы... Дай передохнуть. 🐱{e}")
 
     # Важно: чтобы работали команды и бот не зависал на ивентах
     await bot.process_commands(message)
