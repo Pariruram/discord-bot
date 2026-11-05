@@ -14,12 +14,11 @@ import threading
 
 load_dotenv()
 
-# === Только секреты из .env ===
+# === Только секреты ===
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-OWNER_ID = os.getenv("OWNER_ID")
 
 # === Логирование ===
 logging.basicConfig(
@@ -42,7 +41,7 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 
-# === Discord + Groq + Supabase ===
+# === Discord + API ===
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -50,7 +49,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 groq_client = Groq(api_key=GROQ_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ====================== РАБОТА С НАСТРОЙКАМИ ======================
+# ====================== НАСТРОЙКИ ======================
 
 def get_setting(key: str, default: str = "") -> str:
     try:
@@ -79,7 +78,25 @@ def get_all_settings() -> dict:
         logger.error(f"get_all_settings: {e}")
         return {}
 
-# ====================== ПРОФИЛИ ПОЛЬЗОВАТЕЛЕЙ ======================
+# ====================== ВЛАДЕЛЬЦЫ ======================
+
+def get_owners() -> list[str]:
+    try:
+        raw = get_setting("owners", "[]")
+        owners = json.loads(raw)
+        if isinstance(owners, list):
+            return [str(o) for o in owners]
+    except Exception as e:
+        logger.error(f"get_owners: {e}")
+    return []
+
+def save_owners(owners: list[str]):
+    set_setting("owners", json.dumps(owners))
+
+def is_owner(user_id: str | int) -> bool:
+    return str(user_id) in get_owners()
+
+# ====================== ПРОФИЛИ ======================
 
 def get_user_profile(user_id: str) -> dict:
     try:
@@ -179,7 +196,7 @@ def build_system_prompt(global_prompt: str, preferences: dict) -> str:
 {rules}
 """
 
-# ====================== РАЗБИЕНИЕ ДЛИННЫХ СООБЩЕНИЙ ======================
+# ====================== РАЗБИЕНИЕ СООБЩЕНИЙ ======================
 
 def split_message(text: str, max_len: int = 1900) -> list[str]:
     if len(text) <= max_len:
@@ -204,16 +221,66 @@ def split_message(text: str, max_len: int = 1900) -> list[str]:
 
     return parts
 
-# ====================== КОМАНДЫ ВЛАДЕЛЬЦА ======================
+# ====================== КОМАНДЫ ВЛАДЕЛЬЦЕВ ======================
 
-def is_owner(ctx) -> bool:
-    return str(ctx.author.id) == str(OWNER_ID)
+@bot.command(name="owners")
+async def owners_cmd(ctx):
+    if not isinstance(ctx.channel, discord.DMChannel):
+        return await ctx.send("Только в личных сообщениях.")
+    if not is_owner(ctx.author.id):
+        return await ctx.send("Нет доступа.")
+
+    owners = get_owners()
+    if not owners:
+        return await ctx.send("Список владельцев пуст.")
+    text = "\n".join(f"- `{oid}`" for oid in owners)
+    await ctx.send(f"**Владельцы бота:**\n{text}")
+
+@bot.command(name="owner")
+async def owner_cmd(ctx, action: str = None, user_id: str = None):
+    if not isinstance(ctx.channel, discord.DMChannel):
+        return await ctx.send("Только в личных сообщениях.")
+    if not is_owner(ctx.author.id):
+        return await ctx.send("Нет доступа.")
+
+    if action is None:
+        return await ctx.send(
+            "Использование:\n"
+            "`!owners` — список\n"
+            "`!owner add <id>` — добавить\n"
+            "`!owner remove <id>` — удалить"
+        )
+
+    action = action.lower()
+    owners = get_owners()
+
+    if action == "add":
+        if not user_id or not user_id.isdigit():
+            return await ctx.send("Укажи числовой Discord ID.")
+        if user_id in owners:
+            return await ctx.send("Этот пользователь уже владелец.")
+        owners.append(user_id)
+        save_owners(owners)
+        return await ctx.send(f"Добавлен владелец: `{user_id}`")
+
+    if action == "remove":
+        if not user_id or not user_id.isdigit():
+            return await ctx.send("Укажи числовой Discord ID.")
+        if user_id not in owners:
+            return await ctx.send("Такого владельца нет.")
+        if len(owners) <= 1:
+            return await ctx.send("Нельзя удалить последнего владельца.")
+        owners.remove(user_id)
+        save_owners(owners)
+        return await ctx.send(f"Владелец `{user_id}` удалён.")
+
+    await ctx.send("Доступные действия: `add`, `remove`")
 
 @bot.command(name="settings")
 async def settings_cmd(ctx):
     if not isinstance(ctx.channel, discord.DMChannel):
         return await ctx.send("Только в личных сообщениях.")
-    if not is_owner(ctx):
+    if not is_owner(ctx.author.id):
         return await ctx.send("Нет доступа.")
 
     settings = get_all_settings()
@@ -227,7 +294,7 @@ async def settings_cmd(ctx):
 async def set_cmd(ctx, key: str = None, *, value: str = None):
     if not isinstance(ctx.channel, discord.DMChannel):
         return await ctx.send("Только в личных сообщениях.")
-    if not is_owner(ctx):
+    if not is_owner(ctx.author.id):
         return await ctx.send("Нет доступа.")
 
     allowed = {"model", "fast_model", "max_history", "max_message_length"}
@@ -244,7 +311,7 @@ async def set_cmd(ctx, key: str = None, *, value: str = None):
 async def system_cmd(ctx, *, arg: str = None):
     if not isinstance(ctx.channel, discord.DMChannel):
         return await ctx.send("Только в личных сообщениях.")
-    if not is_owner(ctx):
+    if not is_owner(ctx.author.id):
         return await ctx.send("Нет доступа.")
 
     if not arg:
@@ -268,7 +335,7 @@ async def system_cmd(ctx, *, arg: str = None):
 
 @bot.event
 async def on_ready():
-    logger.info(f"Бот {bot.user} запущен | Owner: {OWNER_ID}")
+    logger.info(f"Бот {bot.user} запущен")
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -277,11 +344,9 @@ async def on_message(message: discord.Message):
 
     await bot.process_commands(message)
 
-    # Только упоминания и личные сообщения
     if not (bot.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel)):
         return
 
-    # Игнорируем команды
     if message.content.startswith("!"):
         return
 
@@ -294,7 +359,7 @@ async def on_message(message: discord.Message):
 
             loop = asyncio.get_running_loop()
 
-            # Загружаем настройки
+            # Настройки
             settings = await loop.run_in_executor(None, get_all_settings)
             model = settings.get("model", "openai/gpt-oss-120b")
             fast_model = settings.get("fast_model", "openai/gpt-oss-20b")
@@ -302,7 +367,7 @@ async def on_message(message: discord.Message):
             max_len = int(settings.get("max_message_length", 1900))
             global_prompt = settings.get("global_system_prompt", "Ты — полезный ассистент.")
 
-            # Профиль и предпочтения
+            # Профиль
             profile = await loop.run_in_executor(None, get_user_profile, user_id)
             current_prefs = profile.get("preferences") or {}
 
@@ -337,7 +402,7 @@ async def on_message(message: discord.Message):
 
             reply = response.choices[0].message.content.strip()
 
-            # Сохраняем полный ответ
+            # Сохраняем ответ
             await loop.run_in_executor(None, save_message, user_id, "assistant", reply)
 
             # Отправляем частями
