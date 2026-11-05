@@ -158,10 +158,7 @@ class ChatService:
                     )
                 except LLMError as exc:
                     logger.warning("LLM недоступна: %s", exc)
-                    await self._reply_safe(
-                        message,
-                        "Не удалось получить ответ от модели. Попробуй позже.",
-                    )
+                    await self._reply_safe(message, exc.user_message())
                     return
 
                 sources = format_sources(reply, tool_context.citations)

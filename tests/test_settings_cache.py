@@ -72,6 +72,26 @@ async def test_invalidate_forces_reload() -> None:
     assert repo.reads == 2
 
 
+async def test_update_applies_several_values_at_once() -> None:
+    repo = FakeRepo({"provider": "gemini"})
+    cache = SettingsCache(repo, ttl=60)
+    await cache.get_all()
+
+    ok = await cache.update(
+        {
+            "provider": "groq",
+            "chat_model": "qwen/qwen3.8-27b",
+            "utility_model": "openai/gpt-oss-20b",
+        }
+    )
+
+    assert ok
+    assert (await cache.get("provider")) == "groq"
+    assert (await cache.get("chat_model")) == "qwen/qwen3.8-27b"
+    assert (await cache.get("utility_model")) == "openai/gpt-oss-20b"
+    assert repo.reads == 1
+
+
 def test_fake_repo_type() -> None:
     # Keeps the fake honest about the Repository protocol surface used here.
     repo: Any = FakeRepo()

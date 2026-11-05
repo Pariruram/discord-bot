@@ -25,6 +25,7 @@ class ProviderSpec:
     default_utility_model: str
     requires_api_key: bool = True
     supports_tool_choice: bool = True
+    free: bool = False
 
     def api_key(self) -> str | None:
         if not self.api_key_env:
@@ -45,7 +46,7 @@ BUILTIN_PROVIDERS: dict[str, ProviderSpec] = {
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         api_key_env="GEMINI_API_KEY",
         default_model="gemini-3.8-flash",
-        default_utility_model="gemini-3.8-flash",
+        default_utility_model="gemini-3.5-flash-lite",
     ),
     "openai": ProviderSpec(
         name="openai",
@@ -58,8 +59,8 @@ BUILTIN_PROVIDERS: dict[str, ProviderSpec] = {
         name="openrouter",
         base_url="https://openrouter.ai/api/v1",
         api_key_env="OPENROUTER_API_KEY",
-        default_model="openai/gpt-4.1-mini",
-        default_utility_model="openai/gpt-4.1-nano",
+        default_model="nvidia/nemotron-3-ultra-550b-a55b:free",
+        default_utility_model="nvidia/nemotron-3-ultra-550b-a55b:free",
     ),
     "ollama": ProviderSpec(
         name="ollama",
@@ -68,6 +69,7 @@ BUILTIN_PROVIDERS: dict[str, ProviderSpec] = {
         default_model="llama3.1",
         default_utility_model="llama3.1",
         requires_api_key=False,
+        free=True,
     ),
 }
 
@@ -113,6 +115,7 @@ def spec_from_dict(data: Mapping[str, Any]) -> ProviderSpec | None:
         default_utility_model=default_utility_model,
         requires_api_key=requires_api_key,
         supports_tool_choice=bool(data.get("supports_tool_choice", True)),
+        free=bool(data.get("free", False)),
     )
 
 

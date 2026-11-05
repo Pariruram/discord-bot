@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from bot.config import Config
 from bot.discord_app.chat import ChatService
 from bot.llm.client import LLMClient
+from bot.llm.model_switcher import ModelSwitcher
 from bot.storage.cache import SettingsCache
 from bot.storage.channel_memory import ChannelMemoryManager
 from bot.storage.repository import Repository
@@ -22,3 +23,4 @@ class Services:
     llm: LLMClient
     tools: ToolRegistry
     chat: ChatService
+    model_switcher: ModelSwitcher

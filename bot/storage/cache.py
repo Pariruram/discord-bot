@@ -45,14 +45,33 @@ class SettingsCache:
         return (await self.get_all()).get(key, default)
 
     async def set(self, key: str, value: str) -> bool:
-        ok = await self._repo.set_setting(key, value)
-        if self._data is not None:
-            self._data[key] = value
-        else:
-            # Nothing loaded yet: fetch the full snapshot on the next read
-            # instead of exposing a cache that contains only this key.
-            self.invalidate()
-        return ok
+        async with self._lock:
+            ok = await self._repo.set_setting(key, value)
+            if self._data is not None:
+                self._data[key] = value
+            else:
+                # Nothing loaded yet: fetch the full snapshot on the next read
+                # instead of exposing a cache that contains only this key.
+                self.invalidate()
+            return ok
+
+    async def update(self, values: Mapping[str, str]) -> bool:
+        """Persist and apply several settings as one cache update.
+
+        Readers keep seeing the old snapshot until all writes finish, so they
+        cannot observe a half-applied provider/model combination.
+        """
+
+        async with self._lock:
+            results: list[bool] = []
+            for key, value in values.items():
+                results.append(await self._repo.set_setting(key, value))
+
+            if self._data is not None:
+                self._data = {**self._data, **values}
+            else:
+                self.invalidate()
+            return all(results)
 
     async def get_owners(self) -> list[str]:
         raw = await self.get("owners", "[]")
