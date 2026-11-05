@@ -30,14 +30,14 @@ def build_models_embed(
 ) -> discord.Embed:
     embed = discord.Embed(
         title="Free-модели",
-        description="Выбор меняет модель **для всех участников**.",
+        description="Выбранная модель применяется для всех участников.",
         color=discord.Color.blurple(),
     )
-    embed.add_field(name="Сейчас", value=f"`{current.label}`", inline=False)
+    embed.add_field(name="Выбранная модель", value=f"`{current.label}`", inline=False)
 
     if current.key not in {option.key for option in options}:
         embed.add_field(
-            name="⚠️ Текущая модель",
+            name="⚠️ Выбранная модель",
             value="Не входит в free-список. Выберите другую.",
             inline=False,
         )
@@ -192,13 +192,13 @@ class ModelButtonsView(discord.ui.View):
         )
 
         if saved:
-            message = f"✅ Модель для всех: `{option.key}`"
+            message = f"✅ Выбранная модель: `{option.key}`"
         else:
             message = (
-                f"⚠️ Модель применена: `{option.key}`, но не сохранилась в БД. "
+                f"⚠️ Выбранная модель: `{option.key}`, но не сохранилась в БД. "
                 "После рестарта вернётся старая."
             )
-        await interaction.response.send_message(message, ephemeral=True)
+        await interaction.response.send_message(message)
 
         if interaction.message is not None:
             try:
