@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from flask import Flask
 import threading
 from datetime import datetime
+import logging
 
 load_dotenv()
 
@@ -31,6 +32,13 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    force=True
+)
+logger = logging.getLogger(__name__)
+logger.info("Бот запущен")
 # === Бот ===
 intents = discord.Intents.default()
 intents.message_content = True
@@ -40,7 +48,7 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 MAX_HISTORY = 12
-MODEL = "llama-3.3-70b-versatile"
+MODEL = "openai/gpt-oss-120b"
 DEFAULT_SYSTEM = "Ты — полезный ассистент. Отвечай на языке пользователя."
 
 # ====================== БАЗА ДАННЫХ ======================
@@ -262,6 +270,7 @@ async def on_message(message):
 
         except Exception as e:
             print(f"Ошибка: {e}")
+            logger.error(f"Ошибка: {e}")
             await message.reply(f"Произошла ошибка, попробуй ещё раз. {e}")
 
 bot.run(DISCORD_TOKEN)
