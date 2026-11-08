@@ -116,7 +116,9 @@ python main.py
 ## Таблицы Supabase
 
 Схема памяти: `supabase/migrations/20261108000100_memory.sql`. Примени её один
-раз в SQL Editor (или через `supabase db push`).
+раз в SQL Editor (или через `supabase db push`). Если схема уже была применена
+до фикса `ingest_message`, дополнительно примени
+`supabase/migrations/20261108000200_fix_ingest_message.sql`.
 
 - `bot_settings` — настройки бота;
 - `users` — память включена/выключена и время активности;
@@ -346,7 +348,9 @@ docker run --env-file .env -e PORT=8080 -p 8080:8080 discord-ai-bot
 ### Что меняется при деплое
 
 - Применить `supabase/migrations/20261108000100_memory.sql` (новые таблицы и
-  RPC; старые таблицы не трогаются).
+  RPC; старые таблицы не трогаются). Если схема уже применена до фикса
+  `ingest_message`, дополнительно применить
+  `supabase/migrations/20261108000200_fix_ingest_message.sql`.
 - Задать `allowed_channel_ids` для двух каналов через `!set`.
 - **Render start command**: `python main.py`. Если используется `render.yaml`,
   он уже обновлён.

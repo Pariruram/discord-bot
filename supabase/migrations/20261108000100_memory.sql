@@ -154,6 +154,9 @@ create unique index if not exists memory_jobs_dedupe_idx
 
 -- Atomically ingest one Discord message: conversation, session, message and
 -- last-seen marker. Returns the existing row when Discord redelivers a message.
+--
+-- `#variable_conflict use_column` is required: the OUT parameter
+-- `conversation_id` shadows the column of the same name in PL/pgSQL.
 create or replace function ingest_message(
     p_scope_type text,
     p_scope_id text,
@@ -178,6 +181,7 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+#variable_conflict use_column
 declare
     v_conv conversations%rowtype;
     v_session_id uuid;
@@ -213,9 +217,9 @@ begin
 
     if v_conv.last_message_at is null
        or v_now - v_conv.last_message_at > v_gap then
-        update conversation_sessions
+        update conversation_sessions s
            set ended_at = coalesce(v_conv.last_message_at, v_now)
-         where conversation_id = v_conv.id and ended_at is null;
+         where s.conversation_id = v_conv.id and s.ended_at is null;
 
         insert into conversation_sessions (conversation_id, started_at)
         values (v_conv.id, v_now)

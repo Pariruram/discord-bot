@@ -100,6 +100,9 @@ docker run --env-file .env -p 7860:7860 discord-ai-bot
 
 - [ ] Открыть SQL Editor и применить
       `supabase/migrations/20261108000100_memory.sql`.
+- [ ] Если схема уже применялась до фикса `ingest_message`, применить
+      `supabase/migrations/20261108000200_fix_ingest_message.sql` (он заменяет
+      функцию и перезагружает кэш PostgREST).
 - [ ] Проверить, что появились таблицы `users`, `user_personas`, `user_facts`,
       `conversations`, `conversation_sessions`, `conversation_summaries`,
       `messages`, `memory_jobs`.
