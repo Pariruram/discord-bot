@@ -1,4 +1,4 @@
-# Deploy checklist after the rename
+# Deploy checklist
 
 Что изменилось в репозитории:
 
@@ -7,8 +7,11 @@
 - внутренний `discord_bot/discord_app/bot.py` → `discord_bot/discord_app/client.py`;
 - `python -m bot` → `python -m discord_bot`;
 - все импорты `bot.*` → `discord_bot.*`;
+- новая память: `supabase/migrations/20261108000100_memory.sql`, пакет
+  `discord_bot/memory/`, команды `!memory` и `!forget`;
 - Dockerfile, `render.yaml`, CI и Makefile обновлены;
-- схема Supabase и переменные окружения **не изменились**.
+- переменные окружения **не изменились**; поведение памяти настраивается через
+  `bot_settings`.
 
 ## 0. Git после перезаписи истории
 
@@ -29,14 +32,15 @@
 
 Открыть сервис → Settings:
 
-- [ ] **Start Command**: заменить `python bot.py` на `python main.py`.
+- [ ] **Start Command**: `python main.py`.
 - [ ] **Build Command**: оставить `pip install -r requirements.txt`.
-- [ ] **Health Check Path**: `/healthz` (или оставить `/`).
+- [ ] **Health Check Path**: `/healthz`.
 - [ ] **Python version**: `3.11.9` через `.python-version` или env
       `PYTHON_VERSION=3.11.9`.
 - [ ] **Instance count**: `1`.
 - [ ] **Auto-Deploy**: включить, если используется Git-деплой.
 - [ ] **PORT** не задавать вручную — Render передаёт его сам.
+- [ ] **Max Shutdown Delay**: `30` секунд (уже в `render.yaml`).
 
 Переменные окружения остаются прежними:
 
@@ -84,18 +88,31 @@ docker run --env-file .env -p 7860:7860 discord-ai-bot
 
 ## 3. UptimeRobot
 
-- [ ] URL монитора: `https://<service>.onrender.com/healthz`.
+- [ ] URL монитора: `https://discord-bot-nmc8.onrender.com/healthz`.
 - [ ] Интервал: 5 минут.
 - [ ] Ожидаемый код: 200.
 - [ ] Алерты настроены.
 
-Менять URL не обязательно, если уже стоит `/`; `/` продолжает работать.
+`/` тоже отвечает 200, но `/healthz` возвращает явный JSON и лучше подходит для
+проверки.
 
 ## 4. Supabase
 
-- [ ] Миграции **не нужны**.
-- [ ] Таблицы `bot_settings`, `user_profiles`, `chat_history`,
-      `channel_context` остаются прежними.
+- [ ] Открыть SQL Editor и применить
+      `supabase/migrations/20261108000100_memory.sql`.
+- [ ] Проверить, что появились таблицы `users`, `user_personas`, `user_facts`,
+      `conversations`, `conversation_sessions`, `conversation_summaries`,
+      `messages`, `memory_jobs`.
+- [ ] Проверить, что старые `user_profiles`, `chat_history`, `channel_context`
+      остались на месте. Код их больше не использует; удалять можно вручную
+      после успешной проверки.
+- [ ] Убедиться, что используется ключ с доступом к новым таблицам
+      (`service_role` подходит; RLS в миграции не включается).
+- [ ] Задать два канала памяти:
+      `!set allowed_channel_ids <id1>,<id2>`.
+- [ ] При необходимости изменить `session_gap_minutes`,
+      `memory_retention_days`, `max_facts_per_user`, `worker_poll_seconds`,
+      `catch_up_limit` через `!set`.
 - [ ] Старые ключи настроек (`provider`, `model`, `gemini_model`,
       `fast_model` и т.д.) продолжают работать.
 - [ ] `!models` при первом использовании обновит `provider`, `chat_model`,
@@ -122,22 +139,29 @@ CI в `.github/workflows/ci.yml` уже обновлён на новые пут�
 
 ## 7. Проверка после деплоя
 
-- [ ] В логах есть `Запуск бота` и `Бот ... запущен`.
+- [ ] В логах есть `Запуск бота`, `Бот ... запущен` и `Memory worker запущен`.
 - [ ] `/healthz` отвечает `{"status": "ok"}`.
 - [ ] `!models` показывает кнопки free-моделей.
 - [ ] Выбор модели пишет публичное `✅ Выбранная модель: ...`.
 - [ ] `!settings` открывается в ЛС владельца.
 - [ ] Обычный ответ в ЛС или по упоминанию работает.
+- [ ] В ЛС `!memory` показывает факты, `!memory off` и `!memory on` работают.
+- [ ] `!forget all` удаляет факты, после этого `!memory` показывает 0.
+- [ ] В канале из `allowed_channel_ids` бот помнит контекст; в каналах вне
+      списка не отвечает и не запоминает; ЛС работают всегда.
+- [ ] После перезапуска Render в логах есть catch-up или его отсутствие, но
+      бот не дублирует ответы.
 - [ ] При ошибке модели в логах есть `provider=`, `model=`, `status=`,
       `kind=`, `base_url=`.
 
 ## Откат
 
-Если нужно вернуться:
+Если нужно вернуться к старому коду:
 
 - Render start command: `python bot.py`;
 - вернуть пакет `bot/` и файл `bot.py` из предыдущего коммита;
 - вернуть импорты `discord_bot.*` → `bot.*`;
 - вернуть Dockerfile/CI/Makefile.
 
-Supabase и env-переменные при откате менять не нужно.
+Новые таблицы памяти можно оставить: старый код их не использует. Env-переменные
+при откате менять не нужно.

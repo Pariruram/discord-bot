@@ -1,4 +1,4 @@
-"""Message pipeline: memory, history, model call, tools and response rendering."""
+"""Message pipeline: addressing, memory, model call, tools and rendering."""
 
 from __future__ import annotations
 
@@ -11,17 +11,16 @@ import discord
 from discord.ext import commands
 
 from discord_bot.citations import format_sources
+from discord_bot.discord_app.addressing import classify_message
 from discord_bot.llm.client import LLMClient, LLMError
 from discord_bot.llm.models import resolve_model_ref
 from discord_bot.llm.providers import build_providers
 from discord_bot.llm.tool_loop import run_tool_loop
-from discord_bot.llm.utility import extract_preferences, summarize_messages
-from discord_bot.prompts import build_system_prompt
+from discord_bot.memory.service import MemoryService
+from discord_bot.memory.settings import MemorySettings
 from discord_bot.storage.cache import SettingsCache
-from discord_bot.storage.channel_memory import ChannelMemoryManager
-from discord_bot.storage.repository import Repository
 from discord_bot.tools.base import ToolContext, ToolRegistry, enabled_tool_names
-from discord_bot.utils import as_bool, safe_int, split_message
+from discord_bot.utils import safe_int, split_message
 
 logger = logging.getLogger(__name__)
 
@@ -32,19 +31,17 @@ class ChatService:
     def __init__(
         self,
         bot: commands.Bot,
-        repo: Repository,
         settings: SettingsCache,
-        memory: ChannelMemoryManager,
+        memory: MemoryService,
         llm: LLMClient,
         registry: ToolRegistry,
     ) -> None:
         self.bot = bot
-        self.repo = repo
         self.settings = settings
         self.memory = memory
         self.llm = llm
         self.registry = registry
-        self._user_locks: dict[str, asyncio.Lock] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
     async def handle(self, message: discord.Message) -> None:
         try:
@@ -59,91 +56,72 @@ class ChatService:
 
     async def _handle(self, message: discord.Message) -> None:
         settings = await self.settings.get_all()
-        providers = build_providers(settings)
-        model_ref = resolve_model_ref(settings, providers)
-        spec = providers[model_ref.provider]
+        cfg = MemorySettings.from_mapping(settings)
 
-        is_dm = isinstance(message.channel, discord.DMChannel)
-        is_mentioned = bool(self.bot.user and self.bot.user.mentioned_in(message))
-        channel_id = str(message.channel.id)
+        channel = message.channel
+        if not isinstance(channel, discord.DMChannel):
+            parent_id = getattr(channel, "parent_id", None)
+            if not cfg.channel_allowed(
+                str(channel.id),
+                str(parent_id) if parent_id is not None else None,
+            ):
+                return
 
-        if not is_dm and (message.content or "").strip():
-            async def summarize(old_summary: str, messages: list[dict[str, str]]) -> str:
-                return await summarize_messages(
-                    self.llm,
-                    spec,
-                    model_ref.utility_model,
-                    old_summary,
-                    messages,
-                )
-
-            await self.memory.add_message(
-                channel_id,
-                message.author.display_name,
-                message.content.strip(),
-                summarize=summarize,
-            )
-
-        if not (is_dm or is_mentioned):
+        incoming = classify_message(message, self.bot.user)
+        if incoming.addressed_to != "bot" and not cfg.allowed_channel_ids:
+            # With no explicit allowlist the bot only remembers conversations
+            # that actually involve it, never ambient chatter in every channel.
             return
 
+        result = await self.memory.ingest(message, incoming)
+
+        if incoming.addressed_to != "bot":
+            return
+
+        providers = build_providers(settings)
+        if not providers:
+            await self._reply_safe(
+                message,
+                "Не настроен ни один LLM-провайдер. Добавь API-ключ и выбери модель через `!models`.",
+            )
+            return
+
+        try:
+            model_ref = resolve_model_ref(settings, providers)
+        except ValueError:
+            await self._reply_safe(message, "Не удалось определить модель. Проверь `!models`.")
+            return
+        spec = providers[model_ref.provider]
+
+        clean = self._clean_content(message)
+        scope_key = f"{channel.id}:{message.author.id}"
+        lock = self._lock_for(scope_key)
+
         async with message.channel.typing():
-            user_id = str(message.author.id)
-            lock = self._lock_for(user_id)
             async with lock:
-                clean = self._clean_content(message)
-
-                profile = await self.repo.get_user_profile(user_id)
-                preferences = profile.get("preferences") or {}
-                if not isinstance(preferences, dict):
-                    preferences = {}
-
-                if as_bool(settings.get("auto_preferences")):
-                    updated = await extract_preferences(
-                        self.llm,
-                        spec,
-                        model_ref.utility_model,
-                        clean,
-                        preferences,
-                    )
-                    if updated != preferences:
-                        saved = await self.repo.update_preferences(user_id, updated)
-                        if not saved:
-                            logger.warning(
-                                "Предпочтения пользователя %s не сохранены", user_id
-                            )
-                        preferences = updated
-
-                max_history = safe_int(settings.get("max_history"), 12, minimum=1)
-
-                # Fetch history before writing the current message so it is not
-                # duplicated when the database write eventually succeeds.
-                history = await self.repo.fetch_recent_history(user_id, max_history)
-                await self.repo.save_message(user_id, "user", clean)
-
-                channel_context = (
-                    await self.memory.get_context(channel_id) if not is_dm else ""
+                system_prompt, chat_messages = await self.memory.build_context(
+                    message,
+                    incoming,
+                    result,
+                    settings,
+                    clean,
                 )
-                system_prompt = build_system_prompt(
-                    settings.get("global_system_prompt", ""),
-                    preferences,
-                    channel_context,
-                )
-
-                messages: list[dict[str, Any]] = (
-                    [{"role": "system", "content": system_prompt}]
-                    + history
-                    + [{"role": "user", "content": clean}]
-                )
+                messages: list[dict[str, Any]] = [
+                    {"role": "system", "content": system_prompt},
+                    *chat_messages,
+                ]
 
                 tool_context = ToolContext(
-                    user_id=user_id,
-                    channel_id=channel_id,
+                    user_id=str(message.author.id),
+                    channel_id=str(channel.id),
                     guild_id=str(message.guild.id) if message.guild else None,
                     settings=settings,
                 )
                 enabled = enabled_tool_names(
                     settings.get("enabled_tools"), self.registry
+                )
+                max_tokens = safe_int(
+                    settings.get("max_tokens"), 1200, minimum=200, maximum=4000
                 )
 
                 try:
@@ -155,6 +133,7 @@ class ChatService:
                         self.registry,
                         enabled,
                         tool_context,
+                        max_tokens=max_tokens,
                     )
                 except LLMError as exc:
                     logger.warning("LLM недоступна: %s", exc)
@@ -162,10 +141,17 @@ class ChatService:
                     return
 
                 sources = format_sources(reply, tool_context.citations)
-                if sources:
-                    reply = f"{reply}{sources}"
+                sent = f"{reply}{sources}" if sources else reply
 
-                await self.repo.save_message(user_id, "assistant", reply)
+                metadata = {
+                    "provider": spec.name,
+                    "model": model_ref.model,
+                    "citations": [
+                        {"title": citation.title, "url": citation.url}
+                        for citation in tool_context.citations
+                    ],
+                }
+                await self.memory.record_reply(message, result, reply, metadata)
 
         max_len = safe_int(
             settings.get("max_message_length"),
@@ -173,14 +159,14 @@ class ChatService:
             minimum=200,
             maximum=MAX_DISCORD_MESSAGE,
         )
-        await self._send(message, reply, max_len)
+        await self._send(message, sent, max_len)
 
-    def _lock_for(self, user_id: str) -> asyncio.Lock:
-        if len(self._user_locks) > 1000:
-            for key, lock in list(self._user_locks.items()):
-                if key != user_id and not lock.locked():
-                    self._user_locks.pop(key, None)
-        return self._user_locks.setdefault(user_id, asyncio.Lock())
+    def _lock_for(self, key: str) -> asyncio.Lock:
+        if len(self._locks) > 1000:
+            for old_key, lock in list(self._locks.items()):
+                if old_key != key and not lock.locked():
+                    self._locks.pop(old_key, None)
+        return self._locks.setdefault(key, asyncio.Lock())
 
     def _clean_content(self, message: discord.Message) -> str:
         content = message.content or ""

@@ -34,6 +34,11 @@ def create_bot() -> DiscordBot:
             bot.user,
             len(bot.guilds),
         )
+        if bot.services is not None:
+            try:
+                await bot.services.memory.start_background(bot)
+            except Exception:  # noqa: BLE001 - never break the gateway connection
+                logger.exception("Не удалось запустить фоновые задачи памяти")
 
     @bot.event
     async def on_message(message: discord.Message) -> None:
@@ -50,6 +55,29 @@ def create_bot() -> DiscordBot:
             return
 
         await bot.services.chat.handle(message)
+
+    @bot.event
+    async def on_message_edit(before: discord.Message, after: discord.Message) -> None:
+        if after.author.bot or bot.services is None:
+            return
+        if (before.content or "") == (after.content or ""):
+            return
+        await bot.services.memory.update_message(after)
+
+    @bot.event
+    async def on_message_delete(message: discord.Message) -> None:
+        if message.author.bot or bot.services is None:
+            return
+        await bot.services.memory.forget_message(message.id)
+
+    @bot.event
+    async def on_bulk_message_delete(messages: list[discord.Message]) -> None:
+        if bot.services is None:
+            return
+        for message in messages:
+            if message.author.bot:
+                continue
+            await bot.services.memory.forget_message(message.id)
 
     @bot.event
     async def on_command_error(ctx: commands.Context, error: Exception) -> None:

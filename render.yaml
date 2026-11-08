@@ -1,11 +1,12 @@
 services:
   - type: web
-    name: discord-ai-bot
+    name: discord-bot-nmc8
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     healthCheckPath: /healthz
+    maxShutdownDelaySeconds: 30
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION

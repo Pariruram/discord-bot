@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 
 from discord_bot.config import Config, ConfigError, load_config
 from discord_bot.discord_app.chat import ChatService
 from discord_bot.discord_app.client import create_bot
 from discord_bot.discord_app.cogs.admin import AdminCog
+from discord_bot.discord_app.cogs.memory import MemoryCog
 from discord_bot.discord_app.cogs.models import ModelsCog
 from discord_bot.health import start_health_server
 from discord_bot.llm.client import LLMClient
 from discord_bot.llm.model_switcher import ModelSwitcher
+from discord_bot.memory.repository import SupabaseMemoryRepository
+from discord_bot.memory.service import MemoryService
+from discord_bot.memory.worker import MemoryWorker
 from discord_bot.services import Services
 from discord_bot.storage.cache import SettingsCache
-from discord_bot.storage.channel_memory import ChannelMemoryManager
 from discord_bot.storage.repository import SupabaseRepository
 from discord_bot.tools import register_builtin
 from discord_bot.tools.base import ToolRegistry
@@ -36,37 +38,39 @@ def setup_logging(level: str = "INFO") -> None:
 
 async def run_bot(config: Config) -> None:
     repo = SupabaseRepository(config.supabase_url, config.supabase_key)
+    memory_store = SupabaseMemoryRepository(config.supabase_url, config.supabase_key)
     settings = SettingsCache(repo)
     llm = LLMClient()
     registry = register_builtin(ToolRegistry())
-    memory = ChannelMemoryManager(repo)
+    memory = MemoryService(memory_store, settings, llm)
+    worker = MemoryWorker(memory_store, settings, llm)
+    memory.attach_worker(worker)
     model_switcher = ModelSwitcher(settings)
 
     bot = create_bot()
-    chat = ChatService(bot, repo, settings, memory, llm, registry)
+    chat = ChatService(bot, settings, memory, llm, registry)
     services = Services(
         config=config,
         repo=repo,
         settings=settings,
-        memory=memory,
         llm=llm,
         tools=registry,
         chat=chat,
         model_switcher=model_switcher,
+        memory=memory,
+        worker=worker,
     )
     bot.services = services
     await bot.add_cog(AdminCog(bot, services))
+    await bot.add_cog(MemoryCog(bot, services))
     await bot.add_cog(ModelsCog(bot, services))
-
-    flusher = asyncio.create_task(memory.run_flusher(), name="channel-memory-flusher")
 
     try:
         await bot.start(config.discord_token)
     finally:
-        flusher.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await flusher
-        await memory.flush_all()
+        await worker.stop()
+        await memory.close()
+        await memory_store.close()
         await llm.aclose()
         await repo.close()
         logger.info("Бот остановлен")

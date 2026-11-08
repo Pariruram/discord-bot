@@ -39,9 +39,16 @@ ALLOWED_SETTINGS = {
     "groq_fast_model",
     "max_history",
     "max_message_length",
-    "auto_preferences",
+    "max_tokens",
     "enabled_tools",
     "global_system_prompt",
+    "memory_enabled",
+    "memory_retention_days",
+    "max_facts_per_user",
+    "session_gap_minutes",
+    "worker_poll_seconds",
+    "catch_up_limit",
+    "allowed_channel_ids",
 }
 
 MODEL_SETTING_KEYS = {
@@ -58,6 +65,12 @@ MODEL_SETTING_KEYS = {
 NUMERIC_SETTINGS = {
     "max_history": (1, 100),
     "max_message_length": (200, 2000),
+    "max_tokens": (200, 4000),
+    "memory_retention_days": (1, 3650),
+    "max_facts_per_user": (10, 1000),
+    "session_gap_minutes": (1, 1440),
+    "worker_poll_seconds": (5, 3600),
+    "catch_up_limit": (0, 500),
 }
 
 
@@ -200,12 +213,29 @@ class AdminCog(commands.Cog, name="admin"):
             await self.services.settings.set(key, str(number))
             return await ctx.send(f"`{key}` изменен на `{number}`.")
 
-        if key == "auto_preferences":
+        if key == "memory_enabled":
             lowered = value.lower()
             if lowered not in {"true", "false", "1", "0", "on", "off", "yes", "no"}:
                 return await ctx.send("Ожидается `true` или `false`.")
             await self.services.settings.set(key, "true" if as_bool(value) else "false")
             return await ctx.send(f"`{key}` изменен.")
+
+        if key == "allowed_channel_ids":
+            if value.startswith("["):
+                parsed = parse_json_list(value, default=None)
+                if not isinstance(parsed, list):
+                    return await ctx.send("Ожидается JSON-список или список через запятую.")
+                names = [str(item).strip() for item in parsed if str(item).strip()]
+            else:
+                names = [item.strip() for item in value.split(",") if item.strip()]
+            if any(not item.isdigit() for item in names):
+                return await ctx.send("ID каналов должны быть числами.")
+            await self.services.settings.set(
+                key, json.dumps(names, ensure_ascii=False)
+            )
+            return await ctx.send(
+                f"Каналы: {names or 'все, где упомянули бота'}"
+            )
 
         if key == "enabled_tools":
             if value.startswith("["):
