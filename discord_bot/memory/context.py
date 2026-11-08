@@ -17,11 +17,33 @@ from discord_bot.utils import truncate
 
 logger = logging.getLogger(__name__)
 
-MAX_TRANSCRIPT_CHARS = 9000
+MAX_TRANSCRIPT_CHARS = 12000
 MAX_MESSAGE_CHARS = 600
 MAX_DM_MESSAGE_CHARS = 2000
+MAX_DM_CONTEXT_CHARS = 12000
 
 SYSTEM_ROLES = {"system"}
+
+
+def format_dm_history(
+    messages: list[StoredMessage],
+    *,
+    limit_chars: int = MAX_DM_CONTEXT_CHARS,
+    max_message_chars: int = MAX_DM_MESSAGE_CHARS,
+) -> list[dict[str, Any]]:
+    """Return DM turns newest-first budgeted, then back in chronological order."""
+
+    turns: list[dict[str, Any]] = []
+    total = 0
+    for item in reversed(messages):
+        if item.role not in {"user", "assistant"}:
+            continue
+        content = truncate(item.content, max_message_chars)
+        if total + len(content) + 1 > limit_chars:
+            break
+        turns.append({"role": item.role, "content": content})
+        total += len(content) + 1
+    return list(reversed(turns))
 
 
 def format_transcript(
@@ -87,7 +109,11 @@ async def build_context(
     *,
     bot_user: Any | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Return ``(system_prompt, chat_messages)`` for one reply."""
+    """Return ``(system_prompt, chat_messages)`` for one reply.
+
+    The recent transcript comes from the database; Discord history is only used
+    for catch-up after a restart.
+    """
 
     cfg = MemorySettings.from_mapping(settings)
     is_dm = is_dm_channel(getattr(message, "channel", None))
@@ -103,25 +129,36 @@ async def build_context(
     persona: dict[str, Any] = {}
     facts: list[Any] = []
     summary = ""
-    history: list[StoredMessage] = []
-    if cfg.enabled:
+    recent: list[StoredMessage] = []
+    if cfg.enabled and result is not None:
         persona = await store.get_persona(author_id)
         facts = await store.list_facts(
             author_id,
             include_private=is_dm,
             guild_id=guild_id,
+            limit=cfg.max_context_facts,
         )
 
-        if result is not None and result.conversation_id:
+        if result.conversation_id:
+            latest = await store.latest_conversation_summary(
+                result.conversation_id
+            )
             summaries = await store.list_summaries(
-                result.conversation_id, limit=4
+                result.conversation_id, limit=3
             )
-            summary = "\n\n".join(
-                item.content.strip()
-                for item in summaries
-                if item.content.strip()
-            )
-            history = await store.history_before(
+            parts: list[str] = []
+            seen: set[str] = set()
+            if latest is not None and latest.content.strip():
+                text = latest.content.strip()
+                parts.append(text)
+                seen.add(text)
+            for item in summaries:
+                text = item.content.strip()
+                if text and text not in seen:
+                    parts.append(text)
+                    seen.add(text)
+            summary = "\n\n".join(parts)
+            recent = await store.history_before(
                 result.conversation_id,
                 result.message_id,
                 cfg.max_history,
@@ -129,7 +166,7 @@ async def build_context(
 
     transcript = ""
     if not is_dm:
-        transcript = format_transcript(history)
+        transcript = format_transcript(recent)
 
     system_prompt = build_system_prompt(
         settings.get("global_system_prompt", ""),
@@ -144,11 +181,7 @@ async def build_context(
     )
 
     if is_dm:
-        chat: list[dict[str, Any]] = [
-            {"role": item.role, "content": truncate(item.content, MAX_DM_MESSAGE_CHARS)}
-            for item in history
-            if item.role in {"user", "assistant"}
-        ]
+        chat: list[dict[str, Any]] = format_dm_history(recent)
         chat.append({"role": "user", "content": clean})
     else:
         chat = [{"role": "user", "content": f"[{author_name}] {clean}"}]

@@ -24,10 +24,11 @@ class MemorySettings:
     enabled: bool = True
     retention_days: int = 365
     max_facts_per_user: int = 200
+    max_context_facts: int = 20
     session_gap_minutes: int = 30
     worker_poll_seconds: int = 30
     catch_up_limit: int = 100
-    max_history: int = 12
+    max_history: int = 20
     allowed_channel_ids: tuple[str, ...] = ()
 
     @classmethod
@@ -45,6 +46,9 @@ class MemorySettings:
             max_facts_per_user=_int(
                 settings, "max_facts_per_user", 200, minimum=10, maximum=1000
             ),
+            max_context_facts=_int(
+                settings, "max_context_facts", 20, minimum=1, maximum=200
+            ),
             session_gap_minutes=_int(
                 settings, "session_gap_minutes", 30, minimum=1, maximum=1440
             ),
@@ -54,7 +58,7 @@ class MemorySettings:
             catch_up_limit=_int(
                 settings, "catch_up_limit", 100, minimum=0, maximum=500
             ),
-            max_history=_int(settings, "max_history", 12, minimum=1, maximum=100),
+            max_history=_int(settings, "max_history", 20, minimum=1, maximum=100),
             allowed_channel_ids=allowed,
         )
 

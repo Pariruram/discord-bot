@@ -27,6 +27,7 @@ def test_prompt_keeps_identity_and_author_separate_from_transcript() -> None:
     assert "Раньше обсуждали Python." in prompt
     assert '<channel_transcript note="' in prompt
     assert "Это НЕ твоя личная история" in prompt
+    assert "Твои прошлые ответы помечены именем Бот" in prompt
     assert "Вася: привет\nБот: здравствуй" in prompt
 
 

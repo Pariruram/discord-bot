@@ -9,10 +9,11 @@ def test_defaults_do_not_require_new_env_vars() -> None:
     assert cfg.enabled is True
     assert cfg.retention_days == 365
     assert cfg.max_facts_per_user == 200
+    assert cfg.max_context_facts == 20
     assert cfg.session_gap_minutes == 30
     assert cfg.worker_poll_seconds == 30
     assert cfg.catch_up_limit == 100
-    assert cfg.max_history == 12
+    assert cfg.max_history == 20
     assert cfg.allowed_channel_ids == ()
 
 
@@ -22,6 +23,7 @@ def test_values_are_read_from_bot_settings() -> None:
             "memory_enabled": "false",
             "memory_retention_days": "30",
             "max_facts_per_user": "50",
+            "max_context_facts": "12",
             "session_gap_minutes": "10",
             "worker_poll_seconds": "15",
             "catch_up_limit": "0",
@@ -33,6 +35,7 @@ def test_values_are_read_from_bot_settings() -> None:
     assert cfg.enabled is False
     assert cfg.retention_days == 30
     assert cfg.max_facts_per_user == 50
+    assert cfg.max_context_facts == 12
     assert cfg.session_gap_minutes == 10
     assert cfg.worker_poll_seconds == 15
     assert cfg.catch_up_limit == 0

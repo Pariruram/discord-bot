@@ -300,7 +300,24 @@ as $$
             from messages m
            where m.conversation_id = p_conversation_id
              and m.deleted_at is null
-             and (p_before_id is null or m.id < p_before_id)
+             and (
+                 p_before_id is null
+                 or m.id < p_before_id
+                 -- A bot reply is written after the next user message when the
+                 -- user follows up quickly. It still belongs to the context of
+                 -- that next message, so include replies to older messages.
+                 or (
+                     m.is_bot
+                     and m.id > p_before_id
+                     and m.reply_to_id in (
+                         select prior.discord_message_id
+                           from messages prior
+                          where prior.conversation_id = p_conversation_id
+                            and prior.id < p_before_id
+                            and prior.discord_message_id is not null
+                     )
+                 )
+             )
            order by m.id desc
            limit greatest(p_limit, 1)
       ) recent

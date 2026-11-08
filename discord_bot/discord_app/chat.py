@@ -16,7 +16,7 @@ from discord_bot.llm.client import LLMClient, LLMError
 from discord_bot.llm.models import resolve_model_ref
 from discord_bot.llm.providers import build_providers
 from discord_bot.llm.tool_loop import run_tool_loop
-from discord_bot.memory.service import MemoryService
+from discord_bot.memory.service import MemoryService, conversation_scope
 from discord_bot.memory.settings import MemorySettings
 from discord_bot.storage.cache import SettingsCache
 from discord_bot.tools.base import ToolContext, ToolRegistry, enabled_tool_names
@@ -55,6 +55,15 @@ class ChatService:
             )
 
     async def _handle(self, message: discord.Message) -> None:
+        # Serialise the whole turn per conversation. The lock is taken before
+        # the first await, so messages are answered in arrival order and the
+        # next turn definitely sees the previous bot reply in the history.
+        scope_type, scope_id, _ = conversation_scope(message)
+        lock = self._lock_for(f"{scope_type}:{scope_id}")
+        async with lock:
+            await self._handle_locked(message)
+
+    async def _handle_locked(self, message: discord.Message) -> None:
         settings = await self.settings.get_all()
         cfg = MemorySettings.from_mapping(settings)
 
@@ -99,64 +108,61 @@ class ChatService:
         spec = providers[model_ref.provider]
 
         clean = self._clean_content(message)
-        scope_key = f"{channel.id}:{message.author.id}"
-        lock = self._lock_for(scope_key)
 
         async with message.channel.typing():
-            async with lock:
-                system_prompt, chat_messages = await self.memory.build_context(
-                    message,
-                    incoming,
-                    result,
-                    settings,
-                    clean,
-                )
-                messages: list[dict[str, Any]] = [
-                    {"role": "system", "content": system_prompt},
-                    *chat_messages,
-                ]
+            system_prompt, chat_messages = await self.memory.build_context(
+                message,
+                incoming,
+                result,
+                settings,
+                clean,
+            )
+            messages: list[dict[str, Any]] = [
+                {"role": "system", "content": system_prompt},
+                *chat_messages,
+            ]
 
-                tool_context = ToolContext(
-                    user_id=str(message.author.id),
-                    channel_id=str(channel.id),
-                    guild_id=str(message.guild.id) if message.guild else None,
-                    settings=settings,
-                )
-                enabled = enabled_tool_names(
-                    settings.get("enabled_tools"), self.registry
-                )
-                max_tokens = safe_int(
-                    settings.get("max_tokens"), 1200, minimum=200, maximum=4000
-                )
+            tool_context = ToolContext(
+                user_id=str(message.author.id),
+                channel_id=str(channel.id),
+                guild_id=str(message.guild.id) if message.guild else None,
+                settings=settings,
+            )
+            enabled = enabled_tool_names(
+                settings.get("enabled_tools"), self.registry
+            )
+            max_tokens = safe_int(
+                settings.get("max_tokens"), 1200, minimum=200, maximum=4000
+            )
 
-                try:
-                    reply = await run_tool_loop(
-                        self.llm,
-                        spec,
-                        model_ref,
-                        messages,
-                        self.registry,
-                        enabled,
-                        tool_context,
-                        max_tokens=max_tokens,
-                    )
-                except LLMError as exc:
-                    logger.warning("LLM недоступна: %s", exc)
-                    await self._reply_safe(message, exc.user_message())
-                    return
+            try:
+                reply = await run_tool_loop(
+                    self.llm,
+                    spec,
+                    model_ref,
+                    messages,
+                    self.registry,
+                    enabled,
+                    tool_context,
+                    max_tokens=max_tokens,
+                )
+            except LLMError as exc:
+                logger.warning("LLM недоступна: %s", exc)
+                await self._reply_safe(message, exc.user_message())
+                return
 
-                sources = format_sources(reply, tool_context.citations)
-                sent = f"{reply}{sources}" if sources else reply
+            sources = format_sources(reply, tool_context.citations)
+            sent = f"{reply}{sources}" if sources else reply
 
-                metadata = {
-                    "provider": spec.name,
-                    "model": model_ref.model,
-                    "citations": [
-                        {"title": citation.title, "url": citation.url}
-                        for citation in tool_context.citations
-                    ],
-                }
-                await self.memory.record_reply(message, result, reply, metadata)
+            metadata = {
+                "provider": spec.name,
+                "model": model_ref.model,
+                "citations": [
+                    {"title": citation.title, "url": citation.url}
+                    for citation in tool_context.citations
+                ],
+            }
+            await self.memory.record_reply(message, result, reply, metadata)
 
         max_len = safe_int(
             settings.get("max_message_length"),

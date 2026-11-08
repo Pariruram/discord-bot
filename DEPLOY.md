@@ -100,9 +100,10 @@ docker run --env-file .env -p 7860:7860 discord-ai-bot
 
 - [ ] Открыть SQL Editor и применить
       `supabase/migrations/20261108000100_memory.sql`.
-- [ ] Если схема уже применялась до фикса `ingest_message`, применить
-      `supabase/migrations/20261108000200_fix_ingest_message.sql` (он заменяет
-      функцию и перезагружает кэш PostgREST).
+- [ ] Если схема уже применялась до фиксов, применить
+      `20261108000200_fix_ingest_message.sql` и
+      `20261108000300_fix_history_before.sql` (они заменяют функции и
+      перезагружают кэш PostgREST).
 - [ ] Проверить, что появились таблицы `users`, `user_personas`, `user_facts`,
       `conversations`, `conversation_sessions`, `conversation_summaries`,
       `messages`, `memory_jobs`.
@@ -114,8 +115,8 @@ docker run --env-file .env -p 7860:7860 discord-ai-bot
 - [ ] Задать два канала памяти:
       `!set allowed_channel_ids <id1>,<id2>`.
 - [ ] При необходимости изменить `session_gap_minutes`,
-      `memory_retention_days`, `max_facts_per_user`, `worker_poll_seconds`,
-      `catch_up_limit` через `!set`.
+      `memory_retention_days`, `max_facts_per_user`, `max_context_facts`,
+      `max_history`, `worker_poll_seconds`, `catch_up_limit` через `!set`.
 - [ ] Старые ключи настроек (`provider`, `model`, `gemini_model`,
       `fast_model` и т.д.) продолжают работать.
 - [ ] `!models` при первом использовании обновит `provider`, `chat_model`,

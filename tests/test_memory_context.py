@@ -5,7 +5,11 @@ from types import SimpleNamespace
 
 import discord
 
-from discord_bot.memory.context import build_context, format_transcript
+from discord_bot.memory.context import (
+    build_context,
+    format_dm_history,
+    format_transcript,
+)
 from discord_bot.memory.models import Fact, IngestResult, StoredMessage, Summary
 
 
@@ -41,11 +45,13 @@ class FakeStore:
         persona: dict | None = None,
         facts: list[Fact] | None = None,
         summaries: list[Summary] | None = None,
+        latest: Summary | None = None,
         history: list[StoredMessage] | None = None,
     ) -> None:
         self.persona = persona or {}
         self.facts = facts or []
         self.summaries = summaries or []
+        self.latest = latest
         self.history = history or []
         self.fact_queries: list[dict] = []
         self.history_queries: list[dict] = []
@@ -66,9 +72,15 @@ class FakeStore:
                 "user_id": user_id,
                 "include_private": include_private,
                 "guild_id": guild_id,
+                "limit": limit,
             }
         )
         return list(self.facts)
+
+    async def latest_conversation_summary(
+        self, conversation_id: str
+    ) -> Summary | None:
+        return self.latest
 
     async def list_summaries(self, conversation_id: str, limit: int) -> list[Summary]:
         return list(self.summaries)
@@ -176,7 +188,12 @@ async def test_channel_context_contains_transcript_and_public_facts() -> None:
     assert chat == [{"role": "user", "content": "[Аня] что нового?"}]
 
     assert store.fact_queries == [
-        {"user_id": "111", "include_private": False, "guild_id": "333"}
+        {
+            "user_id": "111",
+            "include_private": False,
+            "guild_id": "333",
+            "limit": 20,
+        }
     ]
     assert store.history_queries == [
         {"conversation_id": "conv-1", "before_id": 10, "limit": 5}
@@ -231,7 +248,44 @@ async def test_context_without_ingest_result_has_no_history() -> None:
     assert "<memory_summary>" not in system
     assert "<channel_transcript" not in system
     assert chat == [{"role": "user", "content": "[Аня] привет"}]
+    assert store.fact_queries == []
     assert store.history_queries == []
+
+
+async def test_latest_conversation_summary_is_always_included() -> None:
+    store = FakeStore(
+        latest=Summary(
+            level="conversation", content="Общее резюме канала."
+        ),
+        summaries=[Summary(level="session", content="Свежая сессия.")],
+        history=[message_at(1, "Аня", "привет")],
+    )
+
+    system, _ = await build_context(
+        store,
+        {},
+        guild_message(),
+        SimpleNamespace(addressed_to="bot"),
+        RESULT,
+        "что нового?",
+    )
+
+    assert "Общее резюме канала." in system
+    assert "Свежая сессия." in system
+
+
+def test_dm_history_respects_total_budget() -> None:
+    history = [
+        message_at(1, "Аня", "x" * 50),
+        message_at(2, "Аня", "y" * 50),
+        message_at(3, "Аня", "z" * 50),
+    ]
+
+    turns = format_dm_history(
+        history, limit_chars=120, max_message_chars=100
+    )
+
+    assert [turn["content"] for turn in turns] == ["y" * 50, "z" * 50]
 
 
 async def test_disabled_memory_is_not_used_for_context() -> None:
