@@ -75,6 +75,11 @@ class ChatService:
 
         result = await self.memory.ingest(message, incoming)
 
+        if result is not None and result.duplicate:
+            # Discord replayed a message after a reconnect; it was already
+            # stored and answered, so answering again would duplicate the reply.
+            return
+
         if incoming.addressed_to != "bot":
             return
 

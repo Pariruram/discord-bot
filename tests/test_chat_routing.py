@@ -6,6 +6,7 @@ from typing import Any
 import discord
 
 from discord_bot.discord_app.chat import ChatService
+from discord_bot.memory.models import IngestResult
 
 
 class FakeSettings:
@@ -17,11 +18,13 @@ class FakeSettings:
 
 
 class FakeMemory:
-    def __init__(self) -> None:
+    def __init__(self, result: IngestResult | None = None) -> None:
         self.ingested: list[Any] = []
+        self.result = result
 
-    async def ingest(self, message: Any, incoming: Any) -> None:
+    async def ingest(self, message: Any, incoming: Any) -> IngestResult | None:
         self.ingested.append((message, incoming))
+        return self.result
 
 
 def message(channel_id: int = 222) -> SimpleNamespace:
@@ -72,3 +75,33 @@ async def test_ambient_message_is_ignored_without_any_allowlist() -> None:
     await chat._handle(message(channel_id=999))
 
     assert memory.ingested == []
+
+
+async def test_duplicate_delivery_is_not_answered_again() -> None:
+    memory = FakeMemory(
+        result=IngestResult(
+            message_id=5,
+            conversation_id="conv-1",
+            session_id="sess-1",
+            duplicate=True,
+        )
+    )
+    chat = chat_service({}, memory)
+    dm = SimpleNamespace(
+        id=43,
+        content="привет",
+        channel=SimpleNamespace(
+            type=discord.ChannelType.private,
+            id=444,
+            parent_id=None,
+        ),
+        guild=None,
+        author=SimpleNamespace(id=111, display_name="Аня", name="anya", bot=False),
+        reply=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("duplicate must not be answered")
+        ),
+    )
+
+    await chat._handle(dm)
+
+    assert len(memory.ingested) == 1
