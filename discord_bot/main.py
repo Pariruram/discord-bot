@@ -41,9 +41,28 @@ def setup_logging(level: str = "INFO") -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+async def _close_login_session(bot: Any) -> None:
+    """Best-effort cleanup between login attempts.
+
+    discord.py builds a fresh aiohttp session (and TCP connector) on every
+    ``static_login`` call and leaves it open when login raises, so each 429
+    retry would otherwise leak one session. The connector is also reset,
+    because the closed session takes it down with it.
+    """
+
+    http = getattr(bot, "http", None)
+    if http is None:
+        return
+    with contextlib.suppress(Exception):
+        await http.close()
+    http.connector = discord.utils.MISSING
+
+
 async def _start_bot(bot: Any, token: str, *, sleep: Any = asyncio.sleep) -> None:
     """Retry login on a Discord global 429 without a Render crash-loop."""
 
+    attempt = 0
+    floors = (300, 900, 1800, 3600)
     while True:
         try:
             await bot.start(token)
@@ -51,9 +70,19 @@ async def _start_bot(bot: Any, token: str, *, sleep: Any = asyncio.sleep) -> Non
         except discord.HTTPException as exc:
             if getattr(exc, "status", None) != 429:
                 raise
-            wait = max(retry_after_seconds(exc) or 900, 300)
+            attempt += 1
+            provider_wait = retry_after_seconds(exc) or 0
+            floor = floors[min(attempt - 1, len(floors) - 1)]
+            wait = max(provider_wait, floor)
+            await _close_login_session(bot)
             logger.error(
-                "Discord 429 при логине; повтор через %s сек", wait
+                "Discord 429 при логине (попытка %s); повтор через %s сек"
+                "%s",
+                attempt,
+                wait,
+                f" (Retry-After от Discord: {provider_wait} сек)"
+                if provider_wait
+                else "",
             )
             await sleep(wait)
 
