@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+from typing import Any
+
+import discord
 
 from discord_bot.config import Config, ConfigError, load_config
 from discord_bot.discord_app.chat import ChatService
@@ -13,6 +17,7 @@ from discord_bot.discord_app.cogs.memory import MemoryCog
 from discord_bot.discord_app.cogs.models import ModelsCog
 from discord_bot.health import start_health_server
 from discord_bot.llm.client import LLMClient
+from discord_bot.llm.errors import retry_after_seconds
 from discord_bot.llm.model_switcher import ModelSwitcher
 from discord_bot.memory.repository import SupabaseMemoryRepository
 from discord_bot.memory.service import MemoryService
@@ -34,6 +39,23 @@ def setup_logging(level: str = "INFO") -> None:
     )
     logging.getLogger("discord").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+async def _start_bot(bot: Any, token: str, *, sleep: Any = asyncio.sleep) -> None:
+    """Retry login on a Discord global 429 without a Render crash-loop."""
+
+    while True:
+        try:
+            await bot.start(token)
+            return
+        except discord.HTTPException as exc:
+            if getattr(exc, "status", None) != 429:
+                raise
+            wait = max(retry_after_seconds(exc) or 900, 300)
+            logger.error(
+                "Discord 429 при логине; повтор через %s сек", wait
+            )
+            await sleep(wait)
 
 
 async def run_bot(config: Config) -> None:
@@ -66,8 +88,10 @@ async def run_bot(config: Config) -> None:
     await bot.add_cog(ModelsCog(bot, services))
 
     try:
-        await bot.start(config.discord_token)
+        await _start_bot(bot, config.discord_token)
     finally:
+        with contextlib.suppress(Exception):
+            await bot.close()
         await worker.stop()
         await memory.close()
         await memory_store.close()
