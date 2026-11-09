@@ -48,6 +48,7 @@ ALLOWED_SETTINGS = {
     "max_context_facts",
     "session_gap_minutes",
     "worker_poll_seconds",
+    "worker_llm_interval_seconds",
     "catch_up_limit",
     "allowed_channel_ids",
 }
@@ -72,6 +73,7 @@ NUMERIC_SETTINGS = {
     "max_context_facts": (1, 200),
     "session_gap_minutes": (1, 1440),
     "worker_poll_seconds": (5, 3600),
+    "worker_llm_interval_seconds": (0, 60),
     "catch_up_limit": (0, 500),
 }
 

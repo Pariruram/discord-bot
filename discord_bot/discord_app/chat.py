@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
+from collections.abc import AsyncIterator
 from typing import Any
 
 import discord
@@ -27,6 +29,30 @@ logger = logging.getLogger(__name__)
 MAX_DISCORD_MESSAGE = 2000
 
 
+@contextlib.asynccontextmanager
+async def _typing(channel: Any) -> AsyncIterator[None]:
+    """Show the typing indicator without failing the reply on a Discord 429."""
+
+    factory = getattr(channel, "typing", None)
+    if not callable(factory):
+        yield
+        return
+
+    manager = factory()
+    try:
+        await manager.__aenter__()
+    except discord.HTTPException as exc:
+        logger.warning("Индикатор набора пропущен: %s", exc)
+        yield
+        return
+
+    try:
+        yield
+    finally:
+        with contextlib.suppress(discord.HTTPException):
+            await manager.__aexit__(None, None, None)
+
+
 class ChatService:
     def __init__(
         self,
@@ -46,6 +72,14 @@ class ChatService:
     async def handle(self, message: discord.Message) -> None:
         try:
             await self._handle(message)
+        except discord.HTTPException as exc:
+            # Sending another message while Discord is rate-limiting us only
+            # makes the block worse.
+            logger.warning(
+                "Discord API ошибка для сообщения %s: %s",
+                getattr(message, "id", "?"),
+                exc,
+            )
         except Exception:  # noqa: BLE001 - top-level safety net for one message
             error_id = uuid.uuid4().hex[:8]
             logger.exception("Ошибка обработки сообщения (id=%s)", error_id)
@@ -109,7 +143,7 @@ class ChatService:
 
         clean = self._clean_content(message)
 
-        async with message.channel.typing():
+        async with _typing(message.channel):
             system_prompt, chat_messages = await self.memory.build_context(
                 message,
                 incoming,
@@ -194,11 +228,24 @@ class ChatService:
             await message.reply(chunks[0], suppress_embeds=True)
             for chunk in chunks[1:]:
                 await message.channel.send(chunk, suppress_embeds=True)
-        except discord.HTTPException:
-            logger.exception("Не удалось отправить ответ в канал %s", message.channel.id)
+        except discord.HTTPException as exc:
+            if getattr(exc, "status", None) == 429:
+                logger.warning(
+                    "Discord 429 при отправке в канал %s: %s",
+                    getattr(message.channel, "id", "?"),
+                    exc,
+                )
+            else:
+                logger.exception(
+                    "Не удалось отправить ответ в канал %s",
+                    getattr(message.channel, "id", "?"),
+                )
 
     async def _reply_safe(self, message: discord.Message, text: str) -> None:
         try:
             await message.reply(text)
-        except discord.HTTPException:
-            logger.exception("Не удалось отправить сообщение об ошибке")
+        except discord.HTTPException as exc:
+            if getattr(exc, "status", None) == 429:
+                logger.warning("Discord 429 при отправке ошибки: %s", exc)
+            else:
+                logger.exception("Не удалось отправить сообщение об ошибке")

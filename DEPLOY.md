@@ -116,7 +116,8 @@ docker run --env-file .env -p 7860:7860 discord-ai-bot
       `!set allowed_channel_ids <id1>,<id2>`.
 - [ ] При необходимости изменить `session_gap_minutes`,
       `memory_retention_days`, `max_facts_per_user`, `max_context_facts`,
-      `max_history`, `worker_poll_seconds`, `catch_up_limit` через `!set`.
+      `max_history`, `worker_poll_seconds`, `worker_llm_interval_seconds`,
+      `catch_up_limit` через `!set`.
 - [ ] Старые ключи настроек (`provider`, `model`, `gemini_model`,
       `fast_model` и т.д.) продолжают работать.
 - [ ] `!models` при первом использовании обновит `provider`, `chat_model`,

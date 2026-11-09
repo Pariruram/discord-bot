@@ -118,3 +118,12 @@ def test_retry_after_from_exception_attribute() -> None:
     exc.retry_after = "12"
     error = make_error(exc)
     assert error.retry_after == 12
+
+
+def test_retry_after_from_provider_message() -> None:
+    exc = FakeProviderError(429)
+    exc.args = ("Quota exceeded. Please retry in 43.2s.",)
+
+    error = make_error(exc)
+
+    assert error.retry_after == 43

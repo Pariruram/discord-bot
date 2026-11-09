@@ -650,7 +650,7 @@ class SupabaseMemoryRepository:
                 .eq("conversation_id", conversation_id)
                 .not_.is_("ended_at", "null")
                 .is_("summary", "null")
-                .order("started_at")
+                .order("started_at", desc=True)
                 .limit(max(limit, 1))
                 .execute()
             )

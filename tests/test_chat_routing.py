@@ -5,7 +5,7 @@ from typing import Any
 
 import discord
 
-from discord_bot.discord_app.chat import ChatService
+from discord_bot.discord_app.chat import ChatService, _typing
 from discord_bot.memory.models import IngestResult
 
 
@@ -105,3 +105,39 @@ async def test_duplicate_delivery_is_not_answered_again() -> None:
     await chat._handle(dm)
 
     assert len(memory.ingested) == 1
+
+
+class RateLimited(discord.HTTPException):
+    status = 429
+    code = 0
+    text = "Too Many Requests"
+
+    def __init__(self) -> None:
+        pass
+
+
+class RateLimitedTyping:
+    async def __aenter__(self) -> None:
+        raise RateLimited()
+
+    async def __aexit__(self, *args: Any) -> bool:
+        return False
+
+
+class TypingChannel:
+    def typing(self) -> RateLimitedTyping:
+        return RateLimitedTyping()
+
+
+async def test_typing_rate_limit_does_not_abort_the_reply() -> None:
+    entered = False
+
+    async with _typing(TypingChannel()):
+        entered = True
+
+    assert entered is True
+
+
+async def test_typing_without_a_channel_method_is_optional() -> None:
+    async with _typing(SimpleNamespace()):
+        pass

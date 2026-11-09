@@ -15,6 +15,7 @@ from discord_bot.llm.errors import (
     LLMError,
     build_llm_error,
     missing_api_key_error,
+    retry_after_seconds,
 )
 from discord_bot.llm.providers import ProviderSpec
 
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["LLMClient", "LLMError"]
 
-_RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
+_RETRYABLE_STATUS = {408, 409, 500, 502, 503, 504}
 
 
 class LLMClient:
@@ -67,8 +68,10 @@ class LLMClient:
         temperature: float = 0.75,
         max_tokens: int = 1200,
         tool_choice: str | None = "auto",
+        max_attempts: int | None = None,
     ) -> Any:
         client = self._get_client(spec, model)
+        attempts = self._max_attempts if max_attempts is None else max(1, max_attempts)
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -81,7 +84,7 @@ class LLMClient:
                 kwargs["tool_choice"] = tool_choice
 
         last_error: Exception | None = None
-        for attempt in range(1, self._max_attempts + 1):
+        for attempt in range(1, attempts + 1):
             started = time.perf_counter()
             try:
                 response = await client.chat.completions.create(**kwargs)
@@ -98,7 +101,14 @@ class LLMClient:
                 return response
             except Exception as exc:  # noqa: BLE001 - provider SDK raises many types
                 last_error = exc
-                if attempt >= self._max_attempts or not self._is_retryable(exc):
+                if attempt >= attempts or not self._is_retryable(exc):
+                    if getattr(exc, "status_code", None) == 429:
+                        logger.warning(
+                            "LLM %s/%s rate limited, retry after %ss",
+                            spec.name,
+                            model,
+                            retry_after_seconds(exc) or "?",
+                        )
                     break
                 delay = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.3)
                 logger.warning(
@@ -106,7 +116,7 @@ class LLMClient:
                     spec.name,
                     model,
                     attempt,
-                    self._max_attempts,
+                    attempts,
                     exc,
                     delay,
                 )

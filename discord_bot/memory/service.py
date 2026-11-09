@@ -59,6 +59,7 @@ class MemoryService:
         self._worker: MemoryWorker | None = None
         self._bot: Any = None
         self._backfill_task: asyncio.Task[None] | None = None
+        self._last_backfill: datetime | None = None
 
     @property
     def store(self) -> MemoryStore:
@@ -221,6 +222,14 @@ class MemoryService:
 
     async def _backfill(self, bot: Any) -> None:
         try:
+            now = datetime.now(UTC)
+            if (
+                self._last_backfill is not None
+                and now - self._last_backfill < timedelta(minutes=10)
+            ):
+                return
+            self._last_backfill = now
+
             cfg = await self.config()
             if cfg.catch_up_limit <= 0:
                 return
@@ -263,14 +272,18 @@ class MemoryService:
                         recovered += 1
                         if recovered >= cfg.catch_up_limit:
                             break
-                except discord.HTTPException:
+                except discord.HTTPException as exc:
+                    if getattr(exc, "status", None) == 429:
+                        logger.warning(
+                            "Catch-up остановлен из-за Discord 429"
+                        )
+                        return
                     logger.exception(
                         "Catch-up не удался для %s:%s",
                         conversation.scope_type,
                         conversation.scope_id,
                     )
                     continue
-
                 if recovered:
                     logger.info(
                         "Catch-up %s:%s восстановил %s сообщений",
@@ -278,6 +291,7 @@ class MemoryService:
                         conversation.scope_id,
                         recovered,
                     )
+                await asyncio.sleep(1)
         except Exception:  # noqa: BLE001 - startup catch-up is best-effort
             logger.exception("Ошибка catch-up памяти")
 

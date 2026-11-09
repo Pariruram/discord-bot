@@ -27,6 +27,7 @@ class MemorySettings:
     max_context_facts: int = 20
     session_gap_minutes: int = 30
     worker_poll_seconds: int = 30
+    worker_llm_interval_seconds: int = 6
     catch_up_limit: int = 100
     max_history: int = 20
     allowed_channel_ids: tuple[str, ...] = ()
@@ -54,6 +55,13 @@ class MemorySettings:
             ),
             worker_poll_seconds=_int(
                 settings, "worker_poll_seconds", 30, minimum=5, maximum=3600
+            ),
+            worker_llm_interval_seconds=_int(
+                settings,
+                "worker_llm_interval_seconds",
+                6,
+                minimum=0,
+                maximum=60,
             ),
             catch_up_limit=_int(
                 settings, "catch_up_limit", 100, minimum=0, maximum=500

@@ -105,12 +105,18 @@ async def extract_facts(
         spec,
         model,
         [{"role": "user", "content": prompt}],
-        max_tokens=800,
+        max_tokens=1200,
         temperature=0.1,
+        max_attempts=1,
     )
     data = _load_json_object(text)
     if data is None:
-        logger.warning("Не удалось разобрать JSON фактов для %s", author_name)
+        logger.warning(
+            "Не удалось разобрать JSON фактов для %s (model=%s, chars=%s)",
+            author_name,
+            model,
+            len(text),
+        )
         return []
 
     raw_facts = data.get("facts")
@@ -178,6 +184,7 @@ async def summarize_session(
         [{"role": "user", "content": prompt}],
         max_tokens=500,
         temperature=0.2,
+        max_attempts=1,
     )
     return summary.strip() or previous
 
@@ -208,5 +215,6 @@ async def summarize_conversation(
         [{"role": "user", "content": prompt}],
         max_tokens=600,
         temperature=0.2,
+        max_attempts=1,
     )
     return summary.strip() or previous

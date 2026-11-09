@@ -224,7 +224,10 @@ class FakeStore:
 
 class FakeSettings:
     def __init__(self, data: dict[str, str] | None = None) -> None:
-        self.data = dict(data or {})
+        self.data = {
+            "worker_llm_interval_seconds": "0",
+            **(data or {}),
+        }
 
     async def get_all(self) -> dict[str, str]:
         return dict(self.data)

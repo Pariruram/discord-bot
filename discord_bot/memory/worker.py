@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 
 from discord_bot.llm.client import LLMClient
@@ -51,6 +52,7 @@ class MemoryWorker:
         self._wake = asyncio.Event()
         self._last_retention: datetime | None = None
         self._last_requeue: datetime | None = None
+        self._last_llm_at = 0.0
 
     def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -94,6 +96,18 @@ class MemoryWorker:
             return None
         return spec, ref
 
+    async def _throttle(self) -> None:
+        """Keep background LLM calls below the free-tier requests/minute."""
+
+        cfg = await self._config()
+        interval = max(0, cfg.worker_llm_interval_seconds)
+        if interval <= 0:
+            return
+        wait = interval - (time.monotonic() - self._last_llm_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        self._last_llm_at = time.monotonic()
+
     async def _run(self) -> None:
         await self._maybe_requeue_stale()
         while not self._stop.is_set():
@@ -119,7 +133,7 @@ class MemoryWorker:
             self._wake.clear()
 
     async def _process_batch(self) -> int:
-        jobs = await self._store.claim_jobs(5)
+        jobs = await self._store.claim_jobs(1)
         for job in jobs:
             try:
                 await self._process_job(job)
@@ -176,7 +190,7 @@ class MemoryWorker:
         """
 
         sessions = await self._store.list_unsummarized_sessions(
-            conversation.id, limit=5
+            conversation.id, limit=1
         )
         for session in sessions:
             session_id = str(session.get("id") or "")
@@ -204,6 +218,7 @@ class MemoryWorker:
             return
         spec, ref = model
 
+        await self._throttle()
         summary = await summarize_session(
             self._llm,
             spec,
@@ -280,6 +295,7 @@ class MemoryWorker:
             if remaining <= 0:
                 continue
 
+            await self._throttle()
             facts = await extract_facts(
                 self._llm,
                 spec,
@@ -336,6 +352,7 @@ class MemoryWorker:
             return
         spec, ref = model
 
+        await self._throttle()
         content = await summarize_conversation(
             self._llm,
             spec,

@@ -156,7 +156,10 @@ def _detail(exc: Exception) -> str:
     return sanitize_detail(text or str(exc))
 
 
-def _retry_after(exc: Exception) -> int | None:
+_RETRY_IN_RE = re.compile(r"retry in ([\d.]+)\s*s", re.IGNORECASE)
+
+
+def retry_after_seconds(exc: Exception) -> int | None:
     response = getattr(exc, "response", None)
     headers = getattr(response, "headers", None) if response is not None else None
     value = getattr(exc, "retry_after", None)
@@ -165,6 +168,10 @@ def _retry_after(exc: Exception) -> int | None:
             value = headers.get("retry-after")
         except AttributeError:
             value = None
+    if value is None:
+        match = _RETRY_IN_RE.search(str(exc))
+        if match:
+            value = match.group(1)
     if value is None:
         return None
     try:
@@ -196,7 +203,7 @@ def build_llm_error(
 ) -> LLMError:
     status = _status_code(exc)
     detail = _detail(exc)
-    retry_after = _retry_after(exc)
+    retry_after = retry_after_seconds(exc)
 
     if status == 404:
         kind = ErrorKind.model_not_found
