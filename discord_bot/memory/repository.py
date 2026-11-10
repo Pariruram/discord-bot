@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 import threading
@@ -34,6 +35,9 @@ FACT_KINDS = {"identity", "preference", "event", "opinion", "relation"}
 VISIBILITIES = {"private", "public"}
 _ROLE_VALUES = {"user", "assistant", "system"}
 _ADDRESSED_VALUES = {"bot", "human", "ambient"}
+
+# Internal key in ``bot_settings`` used to detect a second running instance.
+HEARTBEAT_KEY = "instance_heartbeat"
 
 _SPACE_RE = re.compile(r"\s+")
 
@@ -186,6 +190,8 @@ class MemoryStore(Protocol):
     async def update_message(self, discord_message_id: str, content: str) -> bool: ...
     async def purge_old_messages(self, older_than: datetime) -> int: ...
     async def purge_old_facts(self, older_than: datetime) -> int: ...
+    async def read_heartbeat(self) -> dict[str, Any] | None: ...
+    async def write_heartbeat(self, instance_id: str) -> bool: ...
     async def close(self) -> None: ...
 
 
@@ -936,6 +942,56 @@ class SupabaseMemoryRepository:
         return await self._call(
             f"update_message({discord_message_id})", write, default=False
         )
+
+    @staticmethod
+    def _heartbeat_payload(instance_id: str) -> dict[str, Any]:
+        return {"instance_id": instance_id, "ts": datetime.now(UTC).isoformat()}
+
+    async def read_heartbeat(self) -> dict[str, Any] | None:
+        """The instance heartbeat row from ``bot_settings`` (or None)."""
+
+        def fetch() -> dict[str, Any] | None:
+            response = (
+                self._client()
+                .table("bot_settings")
+                .select("key, value, updated_at")
+                .eq("key", HEARTBEAT_KEY)
+                .limit(1)
+                .execute()
+            )
+            rows = self._rows(response)
+            if not rows:
+                return None
+            row = rows[0]
+            try:
+                value = json.loads(row.get("value") or "{}")
+            except (TypeError, ValueError):
+                value = {}
+            if not isinstance(value, dict):
+                value = {}
+            updated_at = _parse_dt(row.get("updated_at"))
+            if updated_at is None:
+                updated_at = _parse_dt(value.get("ts"))
+            return {
+                "instance_id": str(value.get("instance_id") or ""),
+                "updated_at": updated_at,
+            }
+
+        return await self._call("read_heartbeat", fetch, default=None)
+
+    async def write_heartbeat(self, instance_id: str) -> bool:
+        def write() -> bool:
+            now = datetime.now(UTC).isoformat()
+            self._client().table("bot_settings").upsert(
+                {
+                    "key": HEARTBEAT_KEY,
+                    "value": json.dumps(self._heartbeat_payload(instance_id)),
+                    "updated_at": now,
+                }
+            ).execute()
+            return True
+
+        return await self._call("write_heartbeat", write, default=False)
 
     async def close(self) -> None:
         """Nothing to release: the sync client owns no long-lived resources."""

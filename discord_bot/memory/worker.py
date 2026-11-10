@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import logging
 import time
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from discord_bot.llm.client import LLMClient
@@ -43,6 +44,8 @@ class MemoryWorker:
         store: MemoryStore,
         settings: SettingsCache,
         llm: LLMClient,
+        *,
+        instance_id: str | None = None,
     ) -> None:
         self._store = store
         self._settings = settings
@@ -53,6 +56,8 @@ class MemoryWorker:
         self._last_retention: datetime | None = None
         self._last_requeue: datetime | None = None
         self._last_llm_at = 0.0
+        self._last_heartbeat = 0.0
+        self.instance_id = instance_id or uuid.uuid4().hex[:12]
 
     def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -60,7 +65,7 @@ class MemoryWorker:
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         self._task = asyncio.create_task(self._run(), name="memory-worker")
-        logger.info("Memory worker запущен")
+        logger.info("Memory worker запущен (instance %s)", self.instance_id)
 
     def notify(self) -> None:
         self._wake.set()
@@ -108,9 +113,54 @@ class MemoryWorker:
             await asyncio.sleep(wait)
         self._last_llm_at = time.monotonic()
 
+    async def _heartbeat(self, *, force: bool = False) -> None:
+        """Publish our heartbeat; at most once a minute unless forced."""
+
+        now = time.monotonic()
+        if not force and now - self._last_heartbeat < 60.0:
+            return
+        self._last_heartbeat = now
+        try:
+            await self._store.write_heartbeat(self.instance_id)
+        except Exception:  # noqa: BLE001 - heartbeat must never kill the worker
+            logger.warning("Не удалось отправить heartbeat инстанса")
+
+    async def _check_other_instance(self) -> None:
+        """Warn loudly if a fresh heartbeat belongs to a different instance."""
+
+        try:
+            heartbeat = await self._store.read_heartbeat()
+        except Exception:  # noqa: BLE001 - detection is best-effort
+            logger.warning("Не удалось прочитать heartbeat, пропускаю проверку")
+            return
+        if not heartbeat:
+            return
+
+        cfg = await self._config()
+        fresh_seconds = max(300, 3 * cfg.worker_poll_seconds)
+        updated_at = heartbeat.get("updated_at")
+        if isinstance(updated_at, datetime):
+            age = datetime.now(UTC) - _aware(updated_at)
+            # Small negative ages are clock skew; only huge negatives hide it.
+            if age > timedelta(seconds=fresh_seconds) or age < timedelta(
+                minutes=-5
+            ):
+                return
+
+        other = str(heartbeat.get("instance_id") or "")
+        if other and other != self.instance_id:
+            logger.error(
+                "Обнаружен второй живой инстанс с этим токеном: %s (мы %s). "
+                "Останови один из них, иначе Discord начнёт блокировать токен.",
+                other,
+                self.instance_id,
+            )
+
     async def _run(self) -> None:
-        await self._maybe_requeue_stale()
+        await self._check_other_instance()
+        await self._heartbeat(force=True)
         while not self._stop.is_set():
+            await self._heartbeat()
             processed = 0
             try:
                 processed = await self._process_batch()

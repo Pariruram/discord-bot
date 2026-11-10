@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
+import uuid
 from typing import Any
 
 import discord
@@ -15,7 +17,7 @@ from discord_bot.discord_app.client import create_bot
 from discord_bot.discord_app.cogs.admin import AdminCog
 from discord_bot.discord_app.cogs.memory import MemoryCog
 from discord_bot.discord_app.cogs.models import ModelsCog
-from discord_bot.health import start_health_server
+from discord_bot.health import HealthState, start_health_server
 from discord_bot.llm.client import LLMClient
 from discord_bot.llm.errors import retry_after_seconds
 from discord_bot.llm.model_switcher import ModelSwitcher
@@ -58,12 +60,20 @@ async def _close_login_session(bot: Any) -> None:
     http.connector = discord.utils.MISSING
 
 
-async def _start_bot(bot: Any, token: str, *, sleep: Any = asyncio.sleep) -> None:
+async def _start_bot(
+    bot: Any,
+    token: str,
+    *,
+    health: HealthState | None = None,
+    sleep: Any = asyncio.sleep,
+) -> None:
     """Retry login on a Discord global 429 without a Render crash-loop."""
 
     attempt = 0
     floors = (300, 900, 1800, 3600)
     while True:
+        if health is not None:
+            health.set_state("logging_in")
         try:
             await bot.start(token)
             return
@@ -84,21 +94,29 @@ async def _start_bot(bot: Any, token: str, *, sleep: Any = asyncio.sleep) -> Non
                 if provider_wait
                 else "",
             )
+            if health is not None:
+                health.set_state("retrying", retry_at=time.time() + wait)
             await sleep(wait)
 
 
-async def run_bot(config: Config) -> None:
+async def run_bot(config: Config, health: HealthState | None = None) -> None:
     repo = SupabaseRepository(config.supabase_url, config.supabase_key)
     memory_store = SupabaseMemoryRepository(config.supabase_url, config.supabase_key)
     settings = SettingsCache(repo)
     llm = LLMClient()
     registry = register_builtin(ToolRegistry())
     memory = MemoryService(memory_store, settings, llm)
-    worker = MemoryWorker(memory_store, settings, llm)
+    worker = MemoryWorker(
+        memory_store,
+        settings,
+        llm,
+        instance_id=health.instance_id if health is not None else None,
+    )
     memory.attach_worker(worker)
     model_switcher = ModelSwitcher(settings)
 
     bot = create_bot()
+    bot.health_state = health
     chat = ChatService(bot, settings, memory, llm, registry)
     services = Services(
         config=config,
@@ -117,7 +135,7 @@ async def run_bot(config: Config) -> None:
     await bot.add_cog(ModelsCog(bot, services))
 
     try:
-        await _start_bot(bot, config.discord_token)
+        await _start_bot(bot, config.discord_token, health=health)
     finally:
         with contextlib.suppress(Exception):
             await bot.close()
@@ -140,11 +158,12 @@ def main() -> None:
     setup_logging(config.log_level)
     logger.info("Запуск бота")
 
+    health_state = HealthState(instance_id=uuid.uuid4().hex[:12])
     if config.enable_health:
-        start_health_server(config.port)
+        start_health_server(config.port, health_state)
 
     try:
-        asyncio.run(run_bot(config))
+        asyncio.run(run_bot(config, health=health_state))
     except KeyboardInterrupt:
         logger.info("Получен Ctrl+C, завершение")
     except Exception:

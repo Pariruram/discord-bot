@@ -38,6 +38,7 @@ ALLOWED_SETTINGS = {
     "groq_model",
     "groq_fast_model",
     "max_history",
+    "max_context_chars",
     "max_message_length",
     "max_tokens",
     "enabled_tools",
@@ -65,7 +66,8 @@ MODEL_SETTING_KEYS = {
 }
 
 NUMERIC_SETTINGS = {
-    "max_history": (1, 100),
+    "max_history": (1, 1000),
+    "max_context_chars": (2000, 400000),
     "max_message_length": (200, 2000),
     "max_tokens": (200, 4000),
     "memory_retention_days": (1, 3650),
@@ -154,9 +156,14 @@ class AdminCog(commands.Cog, name="admin"):
         if not await self._guard(ctx):
             return
         settings = await self.services.settings.get_all()
+        visible = {
+            key: value
+            for key, value in settings.items()
+            if key != "instance_heartbeat"
+        }
         await self._send_text(
             ctx,
-            "```json\n" + json.dumps(settings, indent=2, ensure_ascii=False) + "\n```",
+            "```json\n" + json.dumps(visible, indent=2, ensure_ascii=False) + "\n```",
         )
 
     @commands.command(name="set")

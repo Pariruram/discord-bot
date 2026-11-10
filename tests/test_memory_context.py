@@ -308,3 +308,49 @@ async def test_disabled_memory_is_not_used_for_context() -> None:
     assert chat == [{"role": "user", "content": "привет"}]
     assert store.fact_queries == []
     assert store.history_queries == []
+
+
+async def test_transcript_budget_comes_from_max_context_chars() -> None:
+    store = FakeStore(
+        history=[
+            message_at(1, "Вася", "СТАРЫЙ " + "x" * 590),
+            message_at(2, "Валя", "n" * 590),
+            message_at(3, "Вика", "n" * 590),
+            message_at(4, "Аня", "НОВЫЙ " + "y" * 590),
+        ]
+    )
+
+    system, _ = await build_context(
+        store,
+        {"max_history": "5", "max_context_chars": "2000"},
+        guild_message(),
+        SimpleNamespace(addressed_to="bot"),
+        RESULT,
+        "что нового?",
+    )
+
+    # Each line is ~600 chars; four of them (~2400) no longer fit the
+    # 2000-char budget, so the oldest message is dropped.
+    assert "СТАРЫЙ" not in system
+    assert "НОВЫЙ" in system
+    assert "Валя:" in system
+
+
+async def test_dm_budget_comes_from_max_context_chars() -> None:
+    store = FakeStore(
+        history=[
+            message_at(1, "Аня", "x" * 1900),
+            message_at(2, "Аня", "y" * 1900),
+        ]
+    )
+
+    _, chat = await build_context(
+        store,
+        {"max_history": "5", "max_context_chars": "2000"},
+        dm_message(),
+        SimpleNamespace(addressed_to="bot"),
+        RESULT,
+        "привет",
+    )
+
+    assert [turn["content"] for turn in chat[:-1]] == ["y" * 1900]

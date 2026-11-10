@@ -29,7 +29,8 @@ class MemorySettings:
     worker_poll_seconds: int = 30
     worker_llm_interval_seconds: int = 6
     catch_up_limit: int = 100
-    max_history: int = 20
+    max_history: int = 100
+    max_context_chars: int = 40000
     allowed_channel_ids: tuple[str, ...] = ()
 
     @classmethod
@@ -66,7 +67,10 @@ class MemorySettings:
             catch_up_limit=_int(
                 settings, "catch_up_limit", 100, minimum=0, maximum=500
             ),
-            max_history=_int(settings, "max_history", 20, minimum=1, maximum=100),
+            max_history=_int(settings, "max_history", 100, minimum=1, maximum=1000),
+            max_context_chars=_int(
+                settings, "max_context_chars", 40000, minimum=2000, maximum=400000
+            ),
             allowed_channel_ids=allowed,
         )
 

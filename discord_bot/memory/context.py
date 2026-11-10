@@ -17,10 +17,12 @@ from discord_bot.utils import truncate
 
 logger = logging.getLogger(__name__)
 
-MAX_TRANSCRIPT_CHARS = 12000
+# Character budgets are defaults; the live limits come from ``bot_settings``
+# (``max_context_chars``), so a larger model context can be used via ``!set``.
+MAX_TRANSCRIPT_CHARS = 40000
 MAX_MESSAGE_CHARS = 600
 MAX_DM_MESSAGE_CHARS = 2000
-MAX_DM_CONTEXT_CHARS = 12000
+MAX_DM_CONTEXT_CHARS = 40000
 
 SYSTEM_ROLES = {"system"}
 
@@ -166,7 +168,9 @@ async def build_context(
 
     transcript = ""
     if not is_dm:
-        transcript = format_transcript(recent)
+        transcript = format_transcript(
+            recent, limit_chars=cfg.max_context_chars
+        )
 
     system_prompt = build_system_prompt(
         settings.get("global_system_prompt", ""),
@@ -181,7 +185,9 @@ async def build_context(
     )
 
     if is_dm:
-        chat: list[dict[str, Any]] = format_dm_history(recent)
+        chat: list[dict[str, Any]] = format_dm_history(
+            recent, limit_chars=cfg.max_context_chars
+        )
         chat.append({"role": "user", "content": clean})
     else:
         chat = [{"role": "user", "content": f"[{author_name}] {clean}"}]

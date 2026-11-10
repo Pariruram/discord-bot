@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import discord
 from discord.ext import commands
@@ -22,6 +22,7 @@ class DiscordBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix=COMMAND_PREFIX, intents=intents)
         self.services: Services | None = None
+        self.health_state: Any = None
 
 
 def create_bot() -> DiscordBot:
@@ -29,6 +30,8 @@ def create_bot() -> DiscordBot:
 
     @bot.event
     async def on_ready() -> None:
+        if bot.health_state is not None:
+            bot.health_state.set_state("connected", retry_at=None)
         logger.info(
             "Бот %s запущен; серверов: %s",
             bot.user,

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+import pytest
 
 from discord_bot.memory.models import (
     ConversationState,
@@ -62,6 +65,8 @@ class FakeStore:
         self.purged_facts: list[datetime] = []
         self.unsummarized_sessions: list[dict[str, Any]] = []
         self.requeue_calls = 0
+        self.heartbeat: dict[str, Any] | None = None
+        self.heartbeat_writes: list[str] = []
 
     async def get_conversation(self, conversation_id: str) -> ConversationState | None:
         return self.conversation
@@ -220,6 +225,16 @@ class FakeStore:
     async def purge_old_facts(self, older_than: datetime) -> int:
         self.purged_facts.append(older_than)
         return 1
+
+    async def read_heartbeat(self) -> dict[str, Any] | None:
+        if self.heartbeat is None:
+            return None
+        return dict(self.heartbeat)
+
+    async def write_heartbeat(self, instance_id: str) -> bool:
+        self.heartbeat_writes.append(instance_id)
+        self.heartbeat = {"instance_id": instance_id, "updated_at": datetime.now(UTC)}
+        return True
 
 
 class FakeSettings:
@@ -467,3 +482,74 @@ async def test_stale_jobs_are_requeued_periodically() -> None:
     await worker._maybe_requeue_stale()
 
     assert store.requeue_calls == 1
+
+
+async def test_heartbeat_writes_the_instance_id() -> None:
+    store = FakeStore(conversation())
+    worker = MemoryWorker(store, FakeSettings(), FakeLLM(), instance_id="abc123")
+
+    await worker._heartbeat(force=True)
+
+    assert store.heartbeat_writes == ["abc123"]
+    assert store.heartbeat is not None
+    assert store.heartbeat["instance_id"] == "abc123"
+
+
+async def test_heartbeat_is_throttled_to_once_a_minute() -> None:
+    store = FakeStore(conversation())
+    worker = MemoryWorker(store, FakeSettings(), FakeLLM(), instance_id="abc123")
+
+    await worker._heartbeat()
+    await worker._heartbeat()
+
+    assert len(store.heartbeat_writes) == 1
+
+
+async def test_fresh_heartbeat_from_another_instance_is_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = FakeStore(conversation())
+    store.heartbeat = {
+        "instance_id": "other-instance",
+        "updated_at": datetime.now(UTC) - timedelta(seconds=10),
+    }
+    worker = MemoryWorker(store, FakeSettings(), FakeLLM(), instance_id="me")
+
+    with caplog.at_level(logging.ERROR, logger="discord_bot.memory.worker"):
+        await worker._check_other_instance()
+
+    assert any(
+        "второй живой инстанс" in record.message for record in caplog.records
+    )
+
+
+async def test_own_fresh_heartbeat_is_silent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = FakeStore(conversation())
+    store.heartbeat = {
+        "instance_id": "me",
+        "updated_at": datetime.now(UTC) - timedelta(seconds=10),
+    }
+    worker = MemoryWorker(store, FakeSettings(), FakeLLM(), instance_id="me")
+
+    with caplog.at_level(logging.ERROR, logger="discord_bot.memory.worker"):
+        await worker._check_other_instance()
+
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+async def test_stale_heartbeat_from_another_instance_is_silent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = FakeStore(conversation())
+    store.heartbeat = {
+        "instance_id": "other-instance",
+        "updated_at": datetime.now(UTC) - timedelta(hours=2),
+    }
+    worker = MemoryWorker(store, FakeSettings(), FakeLLM(), instance_id="me")
+
+    with caplog.at_level(logging.ERROR, logger="discord_bot.memory.worker"):
+        await worker._check_other_instance()
+
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
