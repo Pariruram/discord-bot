@@ -3,6 +3,33 @@ from __future__ import annotations
 from discord_bot.prompts import DEFAULT_SYSTEM_PROMPT, build_system_prompt
 
 
+def test_prompt_includes_factual_last_actions() -> None:
+    prompt = build_system_prompt(
+        "Ты — тестовый ассистент.",
+        author_name="Аня",
+        is_dm=True,
+        last_actions=(
+            "Модель: gemini/gemini-3.5-flash\n"
+            '- web_search(query="ai bubble") → ок (1200 симв.)\n'
+            "- источников в ответе: 3"
+        ),
+    )
+
+    assert "<bot_last_actions>" in prompt
+    assert "Твои ФАКТИЧЕСКИЕ действия" in prompt
+    assert 'web_search(query="ai bubble") → ок (1200 симв.)' in prompt
+
+
+def test_prompt_without_last_actions_has_no_block() -> None:
+    prompt = build_system_prompt(
+        "Ты — тестовый ассистент.",
+        author_name="Аня",
+        is_dm=True,
+    )
+
+    assert "<bot_last_actions>" not in prompt
+
+
 def test_prompt_keeps_identity_and_author_separate_from_transcript() -> None:
     prompt = build_system_prompt(
         "Ты — тестовый ассистент.",

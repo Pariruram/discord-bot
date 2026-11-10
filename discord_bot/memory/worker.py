@@ -56,7 +56,7 @@ class MemoryWorker:
         self._last_retention: datetime | None = None
         self._last_requeue: datetime | None = None
         self._last_llm_at = 0.0
-        self._last_heartbeat = 0.0
+        self._last_heartbeat = float("-inf")
         self.instance_id = instance_id or uuid.uuid4().hex[:12]
 
     def start(self) -> None:

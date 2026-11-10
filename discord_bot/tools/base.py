@@ -26,6 +26,8 @@ class ToolContext:
     guild_id: str | None = None
     settings: Mapping[str, str] = field(default_factory=dict)
     citations: list[Citation] = field(default_factory=list)
+    # Factual record of what actually ran this turn: [{"tool": ..., "args": ...}]
+    tool_trace: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +101,14 @@ class ToolRegistry:
         if not isinstance(args, dict):
             return f"Ошибка: аргументы инструмента {name!r} должны быть JSON-объектом."
 
+        entry: dict[str, Any] = {
+            "tool": name,
+            "args": {
+                key: truncate(str(value), 200) for key, value in args.items()
+            },
+        }
+        context.tool_trace.append(entry)
+
         try:
             result = await asyncio.wait_for(
                 tool.handler(context, **args),
@@ -106,14 +116,19 @@ class ToolRegistry:
             )
         except TimeoutError:
             logger.warning("Инструмент %s не ответил за %.1fs", name, self._timeout)
+            entry["error"] = f"таймаут {self._timeout:.0f} сек"
             return f"Ошибка: инструмент {name!r} не ответил за {self._timeout:.0f} сек."
         except TypeError as exc:
-            logger.warning("Неверные аргументы инструмента %s: %s", name, exc)
+            logger.warning("Неверные args инструмента %s: %s", name, exc)
+            entry["error"] = str(exc)
             return f"Ошибка аргументов инструмента {name!r}: {exc}"
         except Exception as exc:  # noqa: BLE001 - tool failures must not break the chat
             logger.exception("Ошибка выполнения инструмента %s", name)
+            entry["error"] = str(exc)
             return f"Ошибка выполнения инструмента {name!r}: {exc}"
 
         if not isinstance(result, str):
             result = str(result)
-        return truncate(result, self._max_result_chars)
+        result = truncate(result, self._max_result_chars)
+        entry["chars"] = len(result)
+        return result

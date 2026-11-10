@@ -101,6 +101,45 @@ def _persona_lines(row: dict[str, Any]) -> list[str]:
     return lines
 
 
+def format_last_actions(meta: dict[str, Any] | None) -> str:
+    """Factual description of what the bot actually did on its last turn."""
+
+    if not meta:
+        return ""
+
+    lines: list[str] = []
+    model = meta.get("model")
+    if model:
+        provider = meta.get("provider") or ""
+        prefix = f"{provider}/" if provider else ""
+        lines.append(f"Модель: {prefix}{model}")
+
+    calls = meta.get("tool_calls")
+    if isinstance(calls, list) and calls:
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            name = str(call.get("tool") or "?")
+            args = call.get("args")
+            if isinstance(args, dict) and args:
+                arg_text = ", ".join(f"{k}={v}" for k, v in args.items())
+            else:
+                arg_text = ""
+            outcome = (
+                f"ошибка: {call['error']}"
+                if call.get("error")
+                else f"ок ({call.get('chars', '?')} симв.)"
+            )
+            lines.append(f"- {name}({arg_text}) → {outcome}"[:400])
+        citations = meta.get("citations")
+        if isinstance(citations, list) and citations:
+            lines.append(f"- источников в ответе: {len(citations)}")
+    else:
+        lines.append("Инструменты не использовались.")
+
+    return "\n".join(lines)
+
+
 async def build_context(
     store: MemoryStore,
     settings: dict[str, str],
@@ -110,6 +149,7 @@ async def build_context(
     clean: str,
     *,
     bot_user: Any | None = None,
+    stats: dict[str, Any] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Return ``(system_prompt, chat_messages)`` for one reply.
 
@@ -132,6 +172,7 @@ async def build_context(
     facts: list[Any] = []
     summary = ""
     recent: list[StoredMessage] = []
+    last_actions = ""
     if cfg.enabled and result is not None:
         persona = await store.get_persona(author_id)
         facts = await store.list_facts(
@@ -165,6 +206,10 @@ async def build_context(
                 result.message_id,
                 cfg.max_history,
             )
+            reply_meta = await store.latest_reply_metadata(
+                result.conversation_id
+            )
+            last_actions = format_last_actions(reply_meta)
 
     transcript = ""
     if not is_dm:
@@ -182,6 +227,7 @@ async def build_context(
         channel_context=transcript,
         is_dm=is_dm,
         bot_name=str(bot_user) if bot_user is not None else "",
+        last_actions=last_actions,
     )
 
     if is_dm:
@@ -191,5 +237,14 @@ async def build_context(
         chat.append({"role": "user", "content": clean})
     else:
         chat = [{"role": "user", "content": f"[{author_name}] {clean}"}]
+
+    if stats is not None:
+        dm_chars = sum(len(str(turn.get("content", ""))) for turn in chat)
+        stats.update(
+            history_messages=len(recent),
+            context_chars=dm_chars if is_dm else len(transcript),
+            facts=len(facts),
+            summary=bool(summary),
+        )
 
     return system_prompt, chat

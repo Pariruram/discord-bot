@@ -192,6 +192,7 @@ class MemoryStore(Protocol):
     async def purge_old_facts(self, older_than: datetime) -> int: ...
     async def read_heartbeat(self) -> dict[str, Any] | None: ...
     async def write_heartbeat(self, instance_id: str) -> bool: ...
+    async def latest_reply_metadata(self, conversation_id: str) -> dict[str, Any] | None: ...
     async def close(self) -> None: ...
 
 
@@ -992,6 +993,35 @@ class SupabaseMemoryRepository:
             return True
 
         return await self._call("write_heartbeat", write, default=False)
+
+    async def latest_reply_metadata(self, conversation_id: str) -> dict[str, Any] | None:
+        """Metadata of the newest bot reply in this conversation, or None."""
+
+        def fetch() -> dict[str, Any] | None:
+            response = (
+                self._client()
+                .table("messages")
+                .select("metadata")
+                .eq("conversation_id", conversation_id)
+                .eq("is_bot", True)
+                .order("id", desc=True)
+                .limit(1)
+                .execute()
+            )
+            rows = self._rows(response)
+            if not rows:
+                return None
+            meta = rows[0].get("metadata")
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except (TypeError, ValueError):
+                    meta = None
+            return meta if isinstance(meta, dict) and meta else None
+
+        return await self._call(
+            f"latest_reply_metadata({conversation_id})", fetch, default=None
+        )
 
     async def close(self) -> None:
         """Nothing to release: the sync client owns no long-lived resources."""

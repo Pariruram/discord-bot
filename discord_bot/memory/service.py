@@ -199,6 +199,8 @@ class MemoryService:
         result: IngestResult | None,
         settings: dict[str, str],
         clean: str,
+        *,
+        stats: dict[str, Any] | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         bot_user = getattr(self._bot, "user", None)
         return await build_context(
@@ -209,6 +211,7 @@ class MemoryService:
             result,
             clean,
             bot_user=bot_user,
+            stats=stats,
         )
 
     async def start_background(self, bot: Any) -> None:

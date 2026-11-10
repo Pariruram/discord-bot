@@ -72,3 +72,42 @@ async def test_tool_exception_is_returned_to_model() -> None:
     context = ToolContext(user_id="42", channel_id="7")
     result = await registry.execute("broken", "{}", context)
     assert "boom" in result
+
+
+async def test_successful_call_is_recorded_in_the_trace() -> None:
+    registry = make_registry()
+    context = ToolContext(user_id="42", channel_id="7")
+
+    await registry.execute("web_search", '{"value": "hello"}', context)
+
+    assert context.tool_trace == [
+        {"tool": "web_search", "args": {"value": "hello"}, "chars": 8}
+    ]
+
+
+async def test_failed_call_records_the_error_in_the_trace() -> None:
+    registry = ToolRegistry(timeout=1.0)
+
+    async def broken(context: ToolContext) -> str:
+        raise RuntimeError("boom")
+
+    registry.register(make_tool("broken", broken))
+    context = ToolContext(user_id="42", channel_id="7")
+
+    await registry.execute("broken", "{}", context)
+
+    assert len(context.tool_trace) == 1
+    assert context.tool_trace[0]["tool"] == "broken"
+    assert "boom" in context.tool_trace[0]["error"]
+
+
+async def test_long_arguments_are_truncated_in_the_trace() -> None:
+    registry = make_registry()
+    context = ToolContext(user_id="42", channel_id="7")
+
+    await registry.execute(
+        "web_search", '{"value": "%s"}' % ("q" * 500), context
+    )
+
+    assert len(context.tool_trace[0]["args"]["value"]) == 200
+    assert context.tool_trace[0]["args"]["value"].endswith("…")

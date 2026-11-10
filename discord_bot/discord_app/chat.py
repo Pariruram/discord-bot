@@ -22,7 +22,7 @@ from discord_bot.memory.service import MemoryService, conversation_scope
 from discord_bot.memory.settings import MemorySettings
 from discord_bot.storage.cache import SettingsCache
 from discord_bot.tools.base import ToolContext, ToolRegistry, enabled_tool_names
-from discord_bot.utils import safe_int, split_message
+from discord_bot.utils import as_bool, safe_int, split_message
 
 logger = logging.getLogger(__name__)
 
@@ -144,12 +144,14 @@ class ChatService:
         clean = self._clean_content(message)
 
         async with _typing(message.channel):
+            stats: dict[str, Any] = {}
             system_prompt, chat_messages = await self.memory.build_context(
                 message,
                 incoming,
                 result,
                 settings,
                 clean,
+                stats=stats,
             )
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},
@@ -191,12 +193,14 @@ class ChatService:
             metadata = {
                 "provider": spec.name,
                 "model": model_ref.model,
+                "tool_calls": tool_context.tool_trace,
                 "citations": [
                     {"title": citation.title, "url": citation.url}
                     for citation in tool_context.citations
                 ],
             }
             await self.memory.record_reply(message, result, reply, metadata)
+            debug_mode = as_bool(settings.get("debug_mode"), False)
 
         max_len = safe_int(
             settings.get("max_message_length"),
@@ -205,6 +209,45 @@ class ChatService:
             maximum=MAX_DISCORD_MESSAGE,
         )
         await self._send(message, sent, max_len)
+        if debug_mode:
+            await self._send_debug(message, spec, model_ref, tool_context, stats)
+
+    async def _send_debug(
+        self,
+        message: discord.Message,
+        spec: Any,
+        model_ref: Any,
+        tool_context: ToolContext,
+        stats: dict[str, Any],
+    ) -> None:
+        """One factual line about this turn, no persona involved."""
+
+        tool_parts: list[str] = []
+        for entry in tool_context.tool_trace:
+            args = entry.get("args") or {}
+            args_text = ", ".join(
+                f"{key}={str(value)[:60]}" for key, value in args.items()
+            )
+            mark = " ⨯" if entry.get("error") else ""
+            tool_parts.append(f"{entry.get('tool')}({args_text}){mark}")
+        tools_text = " · ".join(tool_parts) if tool_parts else "нет"
+
+        history_chars = int(stats.get("context_chars") or 0)
+        footer = (
+            f"-# 🛠 {getattr(spec, 'name', '?')}/{getattr(model_ref, 'model', '?')}"
+            f" | инструменты: {tools_text}"
+            f" | контекст: {stats.get('history_messages', '?')} сообщ.,"
+            f" {history_chars} симв.,"
+            f" фактов: {stats.get('facts', '?')},"
+            f" резюме: {'да' if stats.get('summary') else 'нет'}"
+        )
+        try:
+            await message.channel.send(footer, suppress_embeds=True)
+        except discord.HTTPException as exc:
+            if getattr(exc, "status", None) == 429:
+                logger.warning("Discord 429 при отправке debug-строки: %s", exc)
+            else:
+                logger.exception("Не удалось отправить debug-строку")
 
     def _lock_for(self, key: str) -> asyncio.Lock:
         if len(self._locks) > 1000:

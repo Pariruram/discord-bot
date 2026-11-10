@@ -47,14 +47,17 @@ class FakeStore:
         summaries: list[Summary] | None = None,
         latest: Summary | None = None,
         history: list[StoredMessage] | None = None,
+        reply_metadata: dict | None = None,
     ) -> None:
         self.persona = persona or {}
         self.facts = facts or []
         self.summaries = summaries or []
         self.latest = latest
         self.history = history or []
+        self.reply_metadata = reply_metadata
         self.fact_queries: list[dict] = []
         self.history_queries: list[dict] = []
+        self.metadata_queries: list[str] = []
 
     async def get_persona(self, user_id: str) -> dict:
         return self.persona
@@ -81,6 +84,10 @@ class FakeStore:
         self, conversation_id: str
     ) -> Summary | None:
         return self.latest
+
+    async def latest_reply_metadata(self, conversation_id: str) -> dict | None:
+        self.metadata_queries.append(conversation_id)
+        return self.reply_metadata
 
     async def list_summaries(self, conversation_id: str, limit: int) -> list[Summary]:
         return list(self.summaries)
@@ -308,6 +315,93 @@ async def test_disabled_memory_is_not_used_for_context() -> None:
     assert chat == [{"role": "user", "content": "привет"}]
     assert store.fact_queries == []
     assert store.history_queries == []
+
+
+async def test_last_actions_come_from_the_previous_reply_metadata() -> None:
+    store = FakeStore(
+        history=[message_at(1, "Аня", "привет")],
+        reply_metadata={
+            "provider": "gemini",
+            "model": "gemini-3.5-flash",
+            "tool_calls": [
+                {"tool": "web_search", "args": {"query": "ai bubble"}, "chars": 1200}
+            ],
+            "citations": [{"title": "t", "url": "u"}],
+        },
+    )
+
+    system, _ = await build_context(
+        store,
+        {},
+        guild_message(),
+        SimpleNamespace(addressed_to="bot"),
+        RESULT,
+        "что нового?",
+    )
+
+    assert "<bot_last_actions>" in system
+    assert "web_search(query=ai bubble) → ок (1200 симв.)" in system
+    assert "источников в ответе: 1" in system
+    assert store.metadata_queries == ["conv-1"]
+
+
+async def test_last_actions_say_that_no_tools_were_used() -> None:
+    store = FakeStore(
+        history=[message_at(1, "Аня", "привет")],
+        reply_metadata={"model": "gemini-3.5-flash"},
+    )
+
+    system, _ = await build_context(
+        store,
+        {},
+        guild_message(),
+        SimpleNamespace(addressed_to="bot"),
+        RESULT,
+        "что нового?",
+    )
+
+    assert "Инструменты не использовались." in system
+
+
+async def test_last_actions_are_absent_without_metadata() -> None:
+    store = FakeStore(history=[message_at(1, "Аня", "привет")])
+
+    system, _ = await build_context(
+        store,
+        {},
+        guild_message(),
+        SimpleNamespace(addressed_to="bot"),
+        RESULT,
+        "что нового?",
+    )
+
+    assert "<bot_last_actions>" not in system
+
+
+async def test_context_stats_are_reported_to_the_caller() -> None:
+    store = FakeStore(
+        facts=[
+            Fact(id="f1", kind="preference", content="любит Python", visibility="public")
+        ],
+        summaries=[Summary(level="session", content="Обсуждали тесты.")],
+        history=[message_at(1, "Вася", "привет"), message_at(2, "Аня", "как дела?")],
+    )
+    stats: dict = {}
+
+    await build_context(
+        store,
+        {"max_history": "5"},
+        guild_message(),
+        SimpleNamespace(addressed_to="bot"),
+        RESULT,
+        "что нового?",
+        stats=stats,
+    )
+
+    assert stats["history_messages"] == 2
+    assert stats["facts"] == 1
+    assert stats["summary"] is True
+    assert stats["context_chars"] > 0
 
 
 async def test_transcript_budget_comes_from_max_context_chars() -> None:

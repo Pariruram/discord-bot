@@ -37,6 +37,7 @@ def build_system_prompt(
     summary: str = "",
     is_dm: bool = True,
     bot_name: str = "",
+    last_actions: str = "",
 ) -> str:
     """Build the system prompt.
 
@@ -80,6 +81,16 @@ def build_system_prompt(
             "Что уже обсуждалось раньше (с сохранением авторства):\n"
             f"{summary.strip()}\n"
             "</memory_summary>"
+        )
+
+    if last_actions.strip():
+        parts.append(
+            "<bot_last_actions>\n"
+            "Твои ФАКТИЧЕСКИЕ действия на предыдущем ходе. Это правда, даже\n"
+            "если она противоречит твоей памяти: ты не «знаешь» новости сам —\n"
+            "ты получаешь их именно этими инструментами. Не отрицай их.\n"
+            f"{last_actions.strip()}\n"
+            "</bot_last_actions>"
         )
 
     if channel_context.strip():

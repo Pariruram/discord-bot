@@ -52,6 +52,7 @@ ALLOWED_SETTINGS = {
     "worker_llm_interval_seconds",
     "catch_up_limit",
     "allowed_channel_ids",
+    "debug_mode",
 }
 
 MODEL_SETTING_KEYS = {
@@ -224,7 +225,7 @@ class AdminCog(commands.Cog, name="admin"):
             await self.services.settings.set(key, str(number))
             return await ctx.send(f"`{key}` изменен на `{number}`.")
 
-        if key == "memory_enabled":
+        if key == "memory_enabled" or key == "debug_mode":
             lowered = value.lower()
             if lowered not in {"true", "false", "1", "0", "on", "off", "yes", "no"}:
                 return await ctx.send("Ожидается `true` или `false`.")
