@@ -14,7 +14,7 @@ from discord_bot.utils import parse_json_list, truncate
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ENABLED_TOOLS = ("web_search",)
+DEFAULT_ENABLED_TOOLS = ("web_search", "fetch_url")
 
 ToolHandler = Callable[..., Awaitable[str]]
 
