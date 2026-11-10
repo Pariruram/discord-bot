@@ -17,6 +17,8 @@ def test_prompt_includes_factual_last_actions() -> None:
 
     assert "<bot_last_actions>" in prompt
     assert "Твои ФАКТИЧЕСКИЕ действия" in prompt
+    assert "НЕ выдумывай действий" in prompt
+    assert "цитируй дословно" in prompt
     assert 'web_search(query="ai bubble") → ок (1200 симв.)' in prompt
 
 
@@ -43,6 +45,8 @@ def test_clean_prompt_replaces_identity_and_drops_persona() -> None:
     assert "<identity>" in prompt
     assert "саркастичный кот" not in prompt
     assert "Режим «чистого ответа»" in prompt
+    assert "не подмену" in prompt
+    assert "внутренних процессах" in prompt
     assert "<persona" not in prompt
     # Контекст остаётся: факты — это знания, а не тон.
     assert '<known_facts about="Аня">' in prompt
