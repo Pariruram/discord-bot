@@ -8,6 +8,7 @@ import discord
 from discord_bot.discord_app import chat as chat_module
 from discord_bot.discord_app.chat import ChatService
 from discord_bot.discord_app.links import (
+    collect_previews,
     extract_urls,
     format_link_block,
     urls_to_prefetch,
@@ -105,6 +106,56 @@ def test_format_link_block_marks_external_data_and_sanitizes_tags() -> None:
     assert "ВНЕШНИЙ текст" in block
     assert 'url="https://example.com"' in block
     assert "</page> страницы" not in block
+
+
+def test_collect_previews_reads_discord_embeds() -> None:
+    message = link_message("https://www.youtube.com/watch?v=rXFV1ivDe6c")
+    message.embeds = [
+        SimpleNamespace(
+            url="https://www.youtube.com/watch?v=rXFV1ivDe6c",
+            title="Are Vector Databases Still Needed?",
+            description="Martin Keen explores RAG.",
+            author=SimpleNamespace(name="IBM Technology"),
+        )
+    ]
+
+    previews = collect_previews(message)
+
+    assert len(previews) == 1
+    assert previews[0].title == "Are Vector Databases Still Needed?"
+    assert previews[0].site == "IBM Technology"
+
+
+def test_format_link_block_renders_previews_without_pages() -> None:
+    block = format_link_block(
+        [],
+        [
+            SimpleNamespace(
+                url="https://www.youtube.com/watch?v=x",
+                title="Название видео",
+                description="Описание видео",
+                site="Канал",
+            )
+        ],
+    )
+
+    assert "<preview" in block
+    assert "Заголовок: Название видео" in block
+    assert "Источник: Канал" in block
+    assert "Описание: Описание видео" in block
+    assert "только предпросмотр" in block
+
+
+def test_fetched_page_wins_over_its_preview() -> None:
+    url = "https://example.com/article"
+
+    block = format_link_block(
+        [ReadResult("Полный текст", "Статья", url)],
+        [SimpleNamespace(url=url, title="Превью", description="", site="")],
+    )
+
+    assert "Полный текст" in block
+    assert "Превью" not in block
 
 
 # --- one full turn through ChatService -------------------------------------
@@ -269,7 +320,7 @@ async def test_failed_prefetch_does_not_block_the_reply(monkeypatch) -> None:
         raise FetchError("сетевая ошибка")
 
     monkeypatch.setattr(chat_module, "read_url", broken)
-    chat, _, llm = build_chat()
+    chat, memory, llm = build_chat()
     message = link_message("https://example.com/article")
     sent: list[str] = []
 
@@ -282,3 +333,40 @@ async def test_failed_prefetch_does_not_block_the_reply(monkeypatch) -> None:
     assert sent == ["По статье: всё ок."]
     assert llm.messages is not None
     assert "<linked_pages" not in llm.messages[0]["content"]
+    assert memory.recorded is not None
+    trace = memory.recorded[1]["tool_calls"]
+    assert trace[0]["auto"] is True
+    assert trace[0]["error"] == "сетевая ошибка"
+
+
+async def test_failed_prefetch_uses_the_discord_preview(monkeypatch) -> None:
+    patch_model(monkeypatch)
+
+    async def broken(url: str, **kwargs: Any) -> ReadResult:
+        raise FetchError("YouTube не отдал данные видео")
+
+    monkeypatch.setattr(chat_module, "read_url", broken)
+    chat, memory, llm = build_chat()
+    message = link_message("https://www.youtube.com/watch?v=rXFV1ivDe6c")
+    message.embeds = [
+        SimpleNamespace(
+            url="https://www.youtube.com/watch?v=rXFV1ivDe6c",
+            title="Are Vector Databases Still Needed?",
+            description="RAG, AI agents and search.",
+            author=SimpleNamespace(name="IBM Technology"),
+        )
+    ]
+
+    async def _reply(text: str, **kwargs: Any) -> None:
+        return None
+
+    message.reply = _reply
+    await chat._handle(message)
+
+    assert llm.messages is not None
+    system = llm.messages[0]["content"]
+    assert "<linked_pages" in system
+    assert "Are Vector Databases Still Needed?" in system
+    assert "IBM Technology" in system
+    assert memory.recorded is not None
+    assert memory.recorded[1]["tool_calls"][0]["error"]

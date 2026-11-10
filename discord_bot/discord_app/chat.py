@@ -16,7 +16,11 @@ from discord.ext import commands
 from discord_bot.citations import Citation, format_sources
 from discord_bot.discord_app.addressing import classify_message
 from discord_bot.discord_app.images import attach_images, collect_image_parts
-from discord_bot.discord_app.links import format_link_block, urls_to_prefetch
+from discord_bot.discord_app.links import (
+    collect_previews,
+    format_link_block,
+    urls_to_prefetch,
+)
 from discord_bot.llm.client import LLMClient, LLMError
 from discord_bot.llm.models import resolve_model_ref
 from discord_bot.llm.providers import build_providers
@@ -174,10 +178,15 @@ class ChatService:
         spec = providers[model_ref.provider]
 
         prefetch_urls = urls_to_prefetch(message, settings)
+        previews = (
+            collect_previews(message, limit=len(prefetch_urls))
+            if prefetch_urls
+            else []
+        )
         clean = self._clean_content(message, text=stored_text)
 
         async with _typing(message.channel):
-            link_results = await self._prefetch_links(prefetch_urls)
+            link_results, link_failures = await self._prefetch_links(prefetch_urls)
             stats: dict[str, Any] = {}
             system_prompt, chat_messages = await self.memory.build_context(
                 message,
@@ -188,9 +197,10 @@ class ChatService:
                 stats=stats,
                 clean_mode=clean_mode,
             )
-            if link_results:
+            if link_results or previews:
                 system_prompt = (
-                    f"{system_prompt}\n\n{format_link_block(link_results)}"
+                    f"{system_prompt}\n\n"
+                    f"{format_link_block(link_results, previews)}"
                 )
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},
@@ -213,6 +223,15 @@ class ChatService:
                         "tool": "fetch_url",
                         "args": {"url": link.url},
                         "chars": len(link.text),
+                        "auto": True,
+                    }
+                )
+            for url, reason in link_failures:
+                tool_context.tool_trace.append(
+                    {
+                        "tool": "fetch_url",
+                        "args": {"url": url},
+                        "error": reason[:200],
                         "auto": True,
                     }
                 )
@@ -264,21 +283,26 @@ class ChatService:
         if debug_mode:
             await self._send_debug(message, spec, model_ref, tool_context, stats)
 
-    async def _prefetch_links(self, urls: list[str]) -> list[ReadResult]:
+    async def _prefetch_links(
+        self, urls: list[str]
+    ) -> tuple[list[ReadResult], list[tuple[str, str]]]:
         """Fetch declared links in parallel; a failure never blocks the reply."""
 
         if not urls:
-            return []
+            return [], []
         outcomes = await asyncio.gather(
             *(read_url(url) for url in urls), return_exceptions=True
         )
         results: list[ReadResult] = []
+        failures: list[tuple[str, str]] = []
         for url, outcome in zip(urls, outcomes, strict=True):
             if isinstance(outcome, ReadResult):
                 results.append(outcome)
             else:
-                logger.info("Ссылка не прочитана заранее: %s (%s)", url, outcome)
-        return results
+                reason = str(outcome) or type(outcome).__name__
+                logger.warning("Ссылка не прочитана заранее: %s (%s)", url, reason)
+                failures.append((url, reason))
+        return results, failures
 
     async def _send_debug(
         self,
