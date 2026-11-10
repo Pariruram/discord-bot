@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING, Any
 import discord
 from discord.ext import commands
 
+from discord_bot.discord_app.cogs.help import help_text
+from discord_bot.utils import split_message
+
 if TYPE_CHECKING:
     from discord_bot.services import Services
 
@@ -16,11 +19,22 @@ logger = logging.getLogger(__name__)
 COMMAND_PREFIX = "!"
 
 
+def is_help_request(content: str | None) -> bool:
+    """``/help`` as plain text — Discord's slash-hint, answered directly."""
+
+    return (content or "").strip() == "/help"
+
+
 class DiscordBot(commands.Bot):
     def __init__(self) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
-        super().__init__(command_prefix=COMMAND_PREFIX, intents=intents)
+        super().__init__(
+            command_prefix=COMMAND_PREFIX,
+            intents=intents,
+            # The default help command fights with the cog of the same name.
+            help_command=None,
+        )
         self.services: Services | None = None
         self.health_state: Any = None
 
@@ -46,6 +60,12 @@ def create_bot() -> DiscordBot:
     @bot.event
     async def on_message(message: discord.Message) -> None:
         if message.author.bot:
+            return
+
+        if is_help_request(message.content):
+            text = help_text(bot)
+            for chunk in split_message(text, max_len=1900):
+                await message.channel.send(chunk)
             return
 
         await bot.process_commands(message)

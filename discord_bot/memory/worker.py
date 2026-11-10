@@ -57,6 +57,9 @@ class MemoryWorker:
         self._last_requeue: datetime | None = None
         self._last_llm_at = 0.0
         self._last_heartbeat = float("-inf")
+        self._conflict_id = ""
+        self._conflict_first_seen = 0.0
+        self._conflict_confirmed = False
         self.instance_id = instance_id or uuid.uuid4().hex[:12]
 
     def start(self) -> None:
@@ -114,27 +117,35 @@ class MemoryWorker:
         self._last_llm_at = time.monotonic()
 
     async def _heartbeat(self, *, force: bool = False) -> None:
-        """Publish our heartbeat; at most once a minute unless forced."""
+        """Publish our heartbeat and police the single-instance rule.
+
+        At most once a minute unless forced. A foreign heartbeat is only an
+        error if it survives a while — the first sighting is usually just the
+        previous deployment still shutting down.
+        """
 
         now = time.monotonic()
         if not force and now - self._last_heartbeat < 60.0:
             return
         self._last_heartbeat = now
+
+        await self._police_instances()
+
         try:
             await self._store.write_heartbeat(self.instance_id)
         except Exception:  # noqa: BLE001 - heartbeat must never kill the worker
             logger.warning("Не удалось отправить heartbeat инстанса")
 
-    async def _check_other_instance(self) -> None:
-        """Warn loudly if a fresh heartbeat belongs to a different instance."""
+    async def _police_instances(self) -> bool:
+        """Return True if a foreign instance is confirmed alive."""
 
         try:
             heartbeat = await self._store.read_heartbeat()
         except Exception:  # noqa: BLE001 - detection is best-effort
             logger.warning("Не удалось прочитать heartbeat, пропускаю проверку")
-            return
+            return self._conflict_confirmed
         if not heartbeat:
-            return
+            return self._conflict_confirmed
 
         cfg = await self._config()
         fresh_seconds = max(300, 3 * cfg.worker_poll_seconds)
@@ -145,19 +156,51 @@ class MemoryWorker:
             if age > timedelta(seconds=fresh_seconds) or age < timedelta(
                 minutes=-5
             ):
-                return
+                return self._conflict_confirmed
 
         other = str(heartbeat.get("instance_id") or "")
-        if other and other != self.instance_id:
+        if not other or other == self.instance_id:
+            if self._conflict_id:
+                logger.info(
+                    "Инстанс %s пропал — похоже, это было перекрытие деплоя, "
+                    "а не второй бот",
+                    self._conflict_id,
+                )
+                self._clear_conflict()
+            return self._conflict_confirmed
+
+        now = time.monotonic()
+        if other != self._conflict_id:
+            logger.warning(
+                "Виден свежий heartbeat чужого инстанса %s (мы %s). "
+                "Вероятно, перекрытие деплоя; если он останется живым, "
+                "через несколько минут будет тревога",
+                other,
+                self.instance_id,
+            )
+            self._conflict_id = other
+            self._conflict_first_seen = now
+            self._conflict_confirmed = False
+            return False
+
+        if self._conflict_confirmed:
+            return True
+        if now - self._conflict_first_seen >= 180.0:
+            self._conflict_confirmed = True
             logger.error(
-                "Обнаружен второй живой инстанс с этим токеном: %s (мы %s). "
+                "Второй живой инстанс с этим токеном не пропадает: %s (мы %s). "
                 "Останови один из них, иначе Discord начнёт блокировать токен.",
                 other,
                 self.instance_id,
             )
+        return self._conflict_confirmed
+
+    def _clear_conflict(self) -> None:
+        self._conflict_id = ""
+        self._conflict_first_seen = 0.0
+        self._conflict_confirmed = False
 
     async def _run(self) -> None:
-        await self._check_other_instance()
         await self._heartbeat(force=True)
         while not self._stop.is_set():
             await self._heartbeat()

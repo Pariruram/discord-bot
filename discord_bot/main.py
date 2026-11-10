@@ -15,6 +15,7 @@ from discord_bot.config import Config, ConfigError, load_config
 from discord_bot.discord_app.chat import ChatService
 from discord_bot.discord_app.client import create_bot
 from discord_bot.discord_app.cogs.admin import AdminCog
+from discord_bot.discord_app.cogs.help import HelpCog
 from discord_bot.discord_app.cogs.memory import MemoryCog
 from discord_bot.discord_app.cogs.models import ModelsCog
 from discord_bot.health import HealthState, start_health_server
@@ -133,6 +134,7 @@ async def run_bot(config: Config, health: HealthState | None = None) -> None:
     await bot.add_cog(AdminCog(bot, services))
     await bot.add_cog(MemoryCog(bot, services))
     await bot.add_cog(ModelsCog(bot, services))
+    await bot.add_cog(HelpCog(bot))
 
     try:
         await _start_bot(bot, config.discord_token, health=health)

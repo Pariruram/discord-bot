@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -505,7 +506,7 @@ async def test_heartbeat_is_throttled_to_once_a_minute() -> None:
     assert len(store.heartbeat_writes) == 1
 
 
-async def test_fresh_heartbeat_from_another_instance_is_reported(
+async def test_first_sighting_of_a_foreign_instance_is_only_a_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     store = FakeStore(conversation())
@@ -515,28 +516,66 @@ async def test_fresh_heartbeat_from_another_instance_is_reported(
     }
     worker = MemoryWorker(store, FakeSettings(), FakeLLM(), instance_id="me")
 
-    with caplog.at_level(logging.ERROR, logger="discord_bot.memory.worker"):
-        await worker._check_other_instance()
+    with caplog.at_level(logging.WARNING, logger="discord_bot.memory.worker"):
+        confirmed = await worker._police_instances()
 
+    assert confirmed is False
+    assert worker._conflict_id == "other-instance"
     assert any(
-        "второй живой инстанс" in record.message for record in caplog.records
+        "перекрытие деплоя" in record.getMessage().lower()
+        or "heartbeat чужого инстанса" in record.getMessage()
+        for record in caplog.records
     )
 
 
-async def test_own_fresh_heartbeat_is_silent(
+async def test_persistent_foreign_instance_confirms_after_three_minutes(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     store = FakeStore(conversation())
+    worker = MemoryWorker(store, FakeSettings(), FakeLLM(), instance_id="me")
+    store.heartbeat = {
+        "instance_id": "other-instance",
+        "updated_at": datetime.now(UTC) - timedelta(seconds=10),
+    }
+
+    # First sighting records the suspicion.
+    assert await worker._police_instances() is False
+
+    # Still alive three minutes later -> confirmed error.
+    worker._conflict_first_seen = time.monotonic() - 200.0
+
+    with caplog.at_level(logging.ERROR, logger="discord_bot.memory.worker"):
+        confirmed = await worker._police_instances()
+
+    assert confirmed is True
+    assert any(
+        "второй живой инстанс" in record.getMessage().lower()
+        for record in caplog.records
+        if record.levelno >= logging.ERROR
+    )
+
+
+async def test_own_heartbeat_clears_an_old_conflict(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = FakeStore(conversation())
+    worker = MemoryWorker(store, FakeSettings(), FakeLLM(), instance_id="me")
+    worker._conflict_id = "other-instance"
+    worker._conflict_first_seen = time.monotonic()
     store.heartbeat = {
         "instance_id": "me",
         "updated_at": datetime.now(UTC) - timedelta(seconds=10),
     }
-    worker = MemoryWorker(store, FakeSettings(), FakeLLM(), instance_id="me")
 
-    with caplog.at_level(logging.ERROR, logger="discord_bot.memory.worker"):
-        await worker._check_other_instance()
+    with caplog.at_level(logging.INFO, logger="discord_bot.memory.worker"):
+        confirmed = await worker._police_instances()
 
-    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert confirmed is False
+    assert worker._conflict_id == ""
+    assert any(
+        "перекрытие деплоя" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 async def test_stale_heartbeat_from_another_instance_is_silent(
@@ -550,6 +589,7 @@ async def test_stale_heartbeat_from_another_instance_is_silent(
     worker = MemoryWorker(store, FakeSettings(), FakeLLM(), instance_id="me")
 
     with caplog.at_level(logging.ERROR, logger="discord_bot.memory.worker"):
-        await worker._check_other_instance()
+        confirmed = await worker._police_instances()
 
+    assert confirmed is False
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
