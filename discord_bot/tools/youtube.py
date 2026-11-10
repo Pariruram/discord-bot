@@ -8,14 +8,19 @@ enough to answer "what is this video about" without a headless browser.
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+logger = logging.getLogger(__name__)
+
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+TRANSCRIPT_API_TIMEOUT_SECONDS = 6.0
 
 YOUTUBE_HOSTS = {
     "youtu.be",
@@ -155,18 +160,60 @@ def parse_transcript(payload: str) -> str:
     return " ".join(joined.split())
 
 
+def _fetch_via_library(video_id: str) -> Any:
+    from youtube_transcript_api import YouTubeTranscriptApi
+
+    return YouTubeTranscriptApi().fetch(video_id, languages=["ru", "en"])
+
+
+async def fetch_transcript_fallback(
+    video_id: str,
+) -> tuple[str, str, bool]:
+    """Last-resort transcript via ``youtube-transcript-api``.
+
+    The library uses YouTube's own caption endpoint with browser-like headers,
+    which works in cases where the raw ``timedtext`` URL returns an empty body.
+    Returns ``(text, language_code, is_generated)``; never raises.
+    """
+
+    try:
+        fetched = await asyncio.wait_for(
+            asyncio.to_thread(_fetch_via_library, video_id),
+            timeout=TRANSCRIPT_API_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001 - transcript is best-effort
+        logger.info("Библиотека субтитров не сработала для %s: %s", video_id, exc)
+        return "", "", False
+
+    snippets = getattr(fetched, "snippets", None) or []
+    text = " ".join(
+        " ".join(str(getattr(snippet, "text", "") or "").split())
+        for snippet in snippets
+    ).strip()
+    return (
+        text,
+        str(getattr(fetched, "language_code", "") or ""),
+        bool(getattr(fetched, "is_generated", False)),
+    )
+
+
 def video_info(
     video_id: str,
     player: dict[str, Any],
     transcript: str = "",
     track: dict[str, Any] | None = None,
+    *,
+    language: str = "",
+    auto: bool | None = None,
 ) -> VideoInfo:
     details = _video_details(player)
     try:
         length = int(str(details.get("lengthSeconds") or 0))
     except (TypeError, ValueError):
         length = 0
-    language = str((track or {}).get("languageCode") or "")
+    language = language or str((track or {}).get("languageCode") or "")
+    if auto is None:
+        auto = str((track or {}).get("kind") or "") == "asr"
     return VideoInfo(
         video_id=video_id,
         title=_clean(details.get("title")),
@@ -175,7 +222,7 @@ def video_info(
         description=_clean(details.get("shortDescription")),
         transcript=transcript.strip(),
         transcript_language=language,
-        transcript_auto=str((track or {}).get("kind") or "") == "asr",
+        transcript_auto=bool(auto),
     )
 
 

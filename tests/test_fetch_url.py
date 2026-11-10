@@ -273,7 +273,15 @@ async def test_youtube_link_returns_metadata_and_transcript() -> None:
     assert any("timedtext" in call for call in fetcher.calls)
 
 
-async def test_youtube_without_captions_falls_back_to_description() -> None:
+async def test_youtube_without_captions_falls_back_to_description(
+    monkeypatch,
+) -> None:
+    async def no_transcript(video_id: str) -> tuple[str, str, bool]:
+        return "", "", False
+
+    monkeypatch.setattr(
+        "discord_bot.tools.fetch_url.fetch_transcript_fallback", no_transcript
+    )
     fetcher = FakeFetcher(youtube_page(with_captions=False))
     tool = build_tool(fetcher, resolver=public_resolver)
 
@@ -283,6 +291,27 @@ async def test_youtube_without_captions_falls_back_to_description() -> None:
 
     assert "Субтитры: недоступны" in result
     assert "Описание видео." in result
+
+
+async def test_youtube_uses_the_transcript_library_when_timedtext_is_empty(
+    monkeypatch,
+) -> None:
+    async def library_transcript(video_id: str) -> tuple[str, str, bool]:
+        return "Текст из библиотеки", "en", False
+
+    monkeypatch.setattr(
+        "discord_bot.tools.fetch_url.fetch_transcript_fallback",
+        library_transcript,
+    )
+    fetcher = FakeFetcher(youtube_page(), "")
+    tool = build_tool(fetcher, resolver=public_resolver)
+
+    result = await tool.handler(
+        context(), f"https://www.youtube.com/watch?v={VIDEO_ID}"
+    )
+
+    assert "Субтитры: en (ручные)" in result
+    assert "Текст из библиотеки" in result
 
 
 async def test_youtube_consent_page_is_reported() -> None:

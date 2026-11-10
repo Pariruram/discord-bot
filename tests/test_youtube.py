@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from discord_bot.tools.youtube import (
     extract_player_response,
+    fetch_transcript_fallback,
     format_duration,
     parse_transcript,
     parse_video_id,
@@ -149,3 +151,44 @@ def test_format_duration() -> None:
     assert format_duration(65) == "1:05"
     assert format_duration(754) == "12:34"
     assert format_duration(3725) == "1:02:05"
+
+
+async def test_fetch_transcript_fallback_joins_snippets(monkeypatch) -> None:
+    import youtube_transcript_api
+
+    class FakeApi:
+        def fetch(self, video_id: str, languages: list[str]) -> SimpleNamespace:
+            assert video_id == VIDEO_ID
+            assert languages == ["ru", "en"]
+            return SimpleNamespace(
+                snippets=[
+                    SimpleNamespace(text=" Hello  world "),
+                    SimpleNamespace(text=" again "),
+                ],
+                language_code="en",
+                is_generated=False,
+            )
+
+    monkeypatch.setattr(
+        youtube_transcript_api, "YouTubeTranscriptApi", FakeApi
+    )
+
+    text, language, generated = await fetch_transcript_fallback(VIDEO_ID)
+
+    assert text == "Hello world again"
+    assert language == "en"
+    assert generated is False
+
+
+async def test_fetch_transcript_fallback_is_silent_on_errors(monkeypatch) -> None:
+    import youtube_transcript_api
+
+    class BrokenApi:
+        def fetch(self, video_id: str, languages: list[str]) -> SimpleNamespace:
+            raise RuntimeError("blocked")
+
+    monkeypatch.setattr(
+        youtube_transcript_api, "YouTubeTranscriptApi", BrokenApi
+    )
+
+    assert await fetch_transcript_fallback(VIDEO_ID) == ("", "", False)

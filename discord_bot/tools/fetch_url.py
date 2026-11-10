@@ -26,6 +26,7 @@ from discord_bot.tools.base import Tool, ToolContext
 from discord_bot.tools.youtube import (
     VideoInfo,
     extract_player_response,
+    fetch_transcript_fallback,
     format_duration,
     parse_transcript,
     parse_video_id,
@@ -40,8 +41,8 @@ MAX_BYTES = 3 * 1024 * 1024
 MAX_RETURN_CHARS = 5600
 MAX_REDIRECTS = 3
 REQUEST_BUDGET_SECONDS = 12.0
-YOUTUBE_PAGE_BUDGET_SECONDS = 10.0
-YOUTUBE_TRANSCRIPT_BUDGET_SECONDS = 7.0
+YOUTUBE_PAGE_BUDGET_SECONDS = 8.0
+YOUTUBE_TRANSCRIPT_BUDGET_SECONDS = 5.0
 
 ALLOWED_CONTENT_TYPES = {
     "text/html",
@@ -419,6 +420,8 @@ async def _youtube_result(
 
     track = pick_caption_track(player)
     transcript = ""
+    language = ""
+    auto: bool | None = None
     if track is not None:
         track_url = transcript_url(track)
         if track_url:
@@ -429,8 +432,16 @@ async def _youtube_result(
                 transcript = parse_transcript(payload.text)
             except FetchError:
                 transcript = ""
+        if transcript:
+            language = str(track.get("languageCode") or "")
+            auto = str(track.get("kind") or "") == "asr"
 
-    info = video_info(video_id, player, transcript, track)
+    if not transcript:
+        transcript, language, auto = await fetch_transcript_fallback(video_id)
+
+    info = video_info(
+        video_id, player, transcript, track, language=language, auto=auto
+    )
     if not info.title:
         raise FetchError("не удалось получить название видео")
     return _format_video(info, url), info.title or url
