@@ -15,6 +15,7 @@ from discord.ext import commands
 
 from discord_bot.citations import format_sources
 from discord_bot.discord_app.addressing import classify_message
+from discord_bot.discord_app.images import attach_images, collect_image_parts
 from discord_bot.llm.client import LLMClient, LLMError
 from discord_bot.llm.models import resolve_model_ref
 from discord_bot.llm.providers import build_providers
@@ -139,7 +140,13 @@ class ChatService:
             return
 
         user_text, clean_mode = split_clean_marker(message.content or "")
-        result = await self.memory.ingest(message, incoming, content=user_text)
+        image_parts, image_note = await collect_image_parts(message)
+        stored_text = "\n".join(
+            part for part in (user_text, image_note) if part
+        )
+        result = await self.memory.ingest(
+            message, incoming, content=stored_text or None
+        )
 
         if result is not None and result.duplicate:
             # Discord replayed a message after a reconnect; it was already
@@ -164,7 +171,7 @@ class ChatService:
             return
         spec = providers[model_ref.provider]
 
-        clean = self._clean_content(message, text=user_text)
+        clean = self._clean_content(message, text=stored_text)
 
         async with _typing(message.channel):
             stats: dict[str, Any] = {}
@@ -181,6 +188,7 @@ class ChatService:
                 {"role": "system", "content": system_prompt},
                 *chat_messages,
             ]
+            attach_images(messages, image_parts)
 
             tool_context = ToolContext(
                 user_id=str(message.author.id),
