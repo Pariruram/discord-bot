@@ -13,9 +13,10 @@ from typing import Any
 import discord
 from discord.ext import commands
 
-from discord_bot.citations import format_sources
+from discord_bot.citations import Citation, format_sources
 from discord_bot.discord_app.addressing import classify_message
 from discord_bot.discord_app.images import attach_images, collect_image_parts
+from discord_bot.discord_app.links import format_link_block, urls_to_prefetch
 from discord_bot.llm.client import LLMClient, LLMError
 from discord_bot.llm.models import resolve_model_ref
 from discord_bot.llm.providers import build_providers
@@ -24,6 +25,7 @@ from discord_bot.memory.service import MemoryService, conversation_scope
 from discord_bot.memory.settings import MemorySettings
 from discord_bot.storage.cache import SettingsCache
 from discord_bot.tools.base import ToolContext, ToolRegistry, enabled_tool_names
+from discord_bot.tools.fetch_url import ReadResult, read_url
 from discord_bot.utils import as_bool, safe_int, split_message
 
 logger = logging.getLogger(__name__)
@@ -171,9 +173,11 @@ class ChatService:
             return
         spec = providers[model_ref.provider]
 
+        prefetch_urls = urls_to_prefetch(message, settings)
         clean = self._clean_content(message, text=stored_text)
 
         async with _typing(message.channel):
+            link_results = await self._prefetch_links(prefetch_urls)
             stats: dict[str, Any] = {}
             system_prompt, chat_messages = await self.memory.build_context(
                 message,
@@ -184,6 +188,10 @@ class ChatService:
                 stats=stats,
                 clean_mode=clean_mode,
             )
+            if link_results:
+                system_prompt = (
+                    f"{system_prompt}\n\n{format_link_block(link_results)}"
+                )
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},
                 *chat_messages,
@@ -196,6 +204,18 @@ class ChatService:
                 guild_id=str(message.guild.id) if message.guild else None,
                 settings=settings,
             )
+            for link in link_results:
+                tool_context.citations.append(
+                    Citation(title=link.title, url=link.url)
+                )
+                tool_context.tool_trace.append(
+                    {
+                        "tool": "fetch_url",
+                        "args": {"url": link.url},
+                        "chars": len(link.text),
+                        "auto": True,
+                    }
+                )
             enabled = enabled_tool_names(
                 settings.get("enabled_tools"), self.registry
             )
@@ -244,6 +264,22 @@ class ChatService:
         if debug_mode:
             await self._send_debug(message, spec, model_ref, tool_context, stats)
 
+    async def _prefetch_links(self, urls: list[str]) -> list[ReadResult]:
+        """Fetch declared links in parallel; a failure never blocks the reply."""
+
+        if not urls:
+            return []
+        outcomes = await asyncio.gather(
+            *(read_url(url) for url in urls), return_exceptions=True
+        )
+        results: list[ReadResult] = []
+        for url, outcome in zip(urls, outcomes, strict=True):
+            if isinstance(outcome, ReadResult):
+                results.append(outcome)
+            else:
+                logger.info("Ссылка не прочитана заранее: %s (%s)", url, outcome)
+        return results
+
     async def _send_debug(
         self,
         message: discord.Message,
@@ -261,6 +297,8 @@ class ChatService:
                 f"{key}={str(value)[:60]}" for key, value in args.items()
             )
             mark = " ⨯" if entry.get("error") else ""
+            if entry.get("auto"):
+                mark += " [авто]"
             tool_parts.append(f"{entry.get('tool')}({args_text}){mark}")
         tools_text = " · ".join(tool_parts) if tool_parts else "нет"
 

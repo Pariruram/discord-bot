@@ -53,6 +53,8 @@ ALLOWED_SETTINGS = {
     "catch_up_limit",
     "allowed_channel_ids",
     "debug_mode",
+    "auto_links",
+    "auto_links_max",
 }
 
 MODEL_SETTING_KEYS = {
@@ -78,6 +80,7 @@ NUMERIC_SETTINGS = {
     "worker_poll_seconds": (5, 3600),
     "worker_llm_interval_seconds": (0, 60),
     "catch_up_limit": (0, 500),
+    "auto_links_max": (1, 3),
 }
 
 
@@ -225,7 +228,7 @@ class AdminCog(commands.Cog, name="admin"):
             await self.services.settings.set(key, str(number))
             return await ctx.send(f"`{key}` изменен на `{number}`.")
 
-        if key == "memory_enabled" or key == "debug_mode":
+        if key == "memory_enabled" or key == "debug_mode" or key == "auto_links":
             lowered = value.lower()
             if lowered not in {"true", "false", "1", "0", "on", "off", "yes", "no"}:
                 return await ctx.send("Ожидается `true` или `false`.")

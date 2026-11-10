@@ -98,6 +98,13 @@ class FetchedPage:
     truncated: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ReadResult:
+    text: str
+    title: str
+    url: str
+
+
 Fetcher = Callable[..., Awaitable[FetchedPage]]
 Resolver = Callable[[str, int], list[str]]
 
@@ -432,38 +439,46 @@ async def _youtube_result(
 # --- Tool ------------------------------------------------------------------
 
 
+async def read_url(
+    url: str,
+    *,
+    fetcher: Fetcher | None = None,
+    resolver: Resolver | None = None,
+) -> ReadResult:
+    """Fetch one URL and return the text that should reach the model."""
+
+    target = normalize_url(url)
+    ok, reason = await validate_url(target, resolver)
+    if not ok:
+        raise FetchError(reason)
+
+    fetch = fetcher or _http_fetch
+    video_id = parse_video_id(target)
+    if video_id is not None:
+        text, title = await _youtube_result(video_id, fetch)
+        return ReadResult(text, title, _watch_url(video_id))
+
+    page = await fetch(target, budget=REQUEST_BUDGET_SECONDS)
+    text, title = _format_page(page)
+    return ReadResult(text, title, page.url)
+
+
 def build_tool(
     fetcher: Fetcher | None = None, resolver: Resolver | None = None
 ) -> Tool:
-    fetch = fetcher or _http_fetch
-
     async def fetch_url(context: ToolContext, url: str) -> str:
-        target = normalize_url(url)
-        ok, reason = await validate_url(target, resolver)
-        if not ok:
-            return f"Не удалось прочитать ссылку: {reason}."
-
         try:
-            video_id = parse_video_id(target)
-            if video_id is not None:
-                text, title = await _youtube_result(video_id, fetch)
-                context.citations.append(
-                    Citation(title=title, url=_watch_url(video_id))
-                )
-                return text
-
-            page = await fetch(target, budget=REQUEST_BUDGET_SECONDS)
-            text, title = _format_page(page)
+            result = await read_url(url, fetcher=fetcher, resolver=resolver)
             context.citations.append(
-                Citation(title=title, url=page.url)
+                Citation(title=result.title, url=result.url)
             )
-            return text
+            return result.text
         except FetchError as exc:
             return f"Не удалось прочитать ссылку: {exc}."
         except TimeoutError:
             return "Не удалось прочитать ссылку: таймаут."
         except Exception:  # noqa: BLE001 - a tool failure must not break the chat
-            logger.exception("Ошибка fetch_url для %s", target)
+            logger.exception("Ошибка fetch_url для %s", url)
             return "Не удалось прочитать ссылку: внутренняя ошибка."
 
     return Tool(
