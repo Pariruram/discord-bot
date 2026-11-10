@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -27,6 +28,27 @@ from discord_bot.utils import as_bool, safe_int, split_message
 logger = logging.getLogger(__name__)
 
 MAX_DISCORD_MESSAGE = 2000
+
+# ``/c`` (or ``/clean``) at the very end asks for a factual, persona-free
+# answer while keeping the whole conversational context.
+CLEAN_MARKER_RE = re.compile(r"(?:^|\s)/(?:clean|c)\s*$", re.IGNORECASE)
+
+
+def split_clean_marker(text: str) -> tuple[str, bool]:
+    """Strip a trailing ``/c`` marker; return ``(text, clean_mode)``.
+
+    A bare marker (nothing left after stripping) is not a mode switch, and
+    neither is a message that merely ends with ``.com/c`` — the slash must be
+    preceded by a boundary, which URLs never provide.
+    """
+
+    match = CLEAN_MARKER_RE.search(text)
+    if match is None:
+        return text, False
+    stripped = text[: match.start()].rstrip()
+    if not stripped:
+        return text, False
+    return stripped, True
 
 
 @contextlib.asynccontextmanager
@@ -116,7 +138,8 @@ class ChatService:
             # that actually involve it, never ambient chatter in every channel.
             return
 
-        result = await self.memory.ingest(message, incoming)
+        user_text, clean_mode = split_clean_marker(message.content or "")
+        result = await self.memory.ingest(message, incoming, content=user_text)
 
         if result is not None and result.duplicate:
             # Discord replayed a message after a reconnect; it was already
@@ -141,7 +164,7 @@ class ChatService:
             return
         spec = providers[model_ref.provider]
 
-        clean = self._clean_content(message)
+        clean = self._clean_content(message, text=user_text)
 
         async with _typing(message.channel):
             stats: dict[str, Any] = {}
@@ -152,6 +175,7 @@ class ChatService:
                 settings,
                 clean,
                 stats=stats,
+                clean_mode=clean_mode,
             )
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},
@@ -256,8 +280,8 @@ class ChatService:
                     self._locks.pop(old_key, None)
         return self._locks.setdefault(key, asyncio.Lock())
 
-    def _clean_content(self, message: discord.Message) -> str:
-        content = message.content or ""
+    def _clean_content(self, message: discord.Message, *, text: str | None = None) -> str:
+        content = message.content if text is None else text
         if self.bot.user is not None:
             content = content.replace(f"<@{self.bot.user.id}>", "")
             content = content.replace(f"<@!{self.bot.user.id}>", "")

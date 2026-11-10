@@ -404,6 +404,29 @@ async def test_context_stats_are_reported_to_the_caller() -> None:
     assert stats["context_chars"] > 0
 
 
+async def test_clean_mode_drops_persona_but_keeps_context() -> None:
+    store = FakeStore(
+        persona={"persona": {"стиль": "сарказм"}},
+        history=[message_at(1, "Аня", "привет")],
+    )
+
+    system, chat = await build_context(
+        store,
+        {},
+        guild_message(),
+        SimpleNamespace(addressed_to="bot"),
+        RESULT,
+        "итог по обсуждению",
+        clean_mode=True,
+    )
+
+    assert "<persona" not in system
+    assert "Режим «чистого ответа»" in system
+    assert "Аня: привет" in system
+    assert chat == [{"role": "user", "content": "[Аня] итог по обсуждению"}]
+    assert "bot_last_actions" not in system  # no metadata -> no block
+
+
 async def test_transcript_budget_comes_from_max_context_chars() -> None:
     store = FakeStore(
         history=[

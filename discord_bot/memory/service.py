@@ -77,9 +77,12 @@ class MemoryService:
         incoming: Addressing,
         *,
         backfill: bool = False,
+        content: str | None = None,
     ) -> IngestResult | None:
         try:
-            return await self._ingest(message, incoming, backfill=backfill)
+            return await self._ingest(
+                message, incoming, backfill=backfill, content=content
+            )
         except Exception:  # noqa: BLE001 - memory must never break a reply
             logger.exception("Не удалось сохранить сообщение в память")
             return None
@@ -90,6 +93,7 @@ class MemoryService:
         incoming: Addressing,
         *,
         backfill: bool,
+        content: str | None = None,
     ) -> IngestResult | None:
         cfg = await self.config()
         if not cfg.enabled:
@@ -108,6 +112,15 @@ class MemoryService:
             or str(author)
         )
 
+        stored_content = (
+            (
+                content
+                if content is not None
+                else (getattr(message, "content", "") or "")
+            )
+            .strip()
+            or "[сообщение без текста]"
+        )
         result = await self._store.ingest(
             scope_type=scope_type,
             scope_id=scope_id,
@@ -119,8 +132,7 @@ class MemoryService:
             role="assistant" if getattr(author, "bot", False) else "user",
             addressed_to=incoming.addressed_to,
             reply_to_id=incoming.reply_to_id,
-            content=(getattr(message, "content", "") or "").strip()
-            or "[сообщение без текста]",
+            content=stored_content,
             session_gap_minutes=cfg.session_gap_minutes,
             metadata={"backfill": True} if backfill else {},
         )
@@ -201,6 +213,7 @@ class MemoryService:
         clean: str,
         *,
         stats: dict[str, Any] | None = None,
+        clean_mode: bool = False,
     ) -> tuple[str, list[dict[str, Any]]]:
         bot_user = getattr(self._bot, "user", None)
         return await build_context(
@@ -212,6 +225,7 @@ class MemoryService:
             clean,
             bot_user=bot_user,
             stats=stats,
+            clean_mode=clean_mode,
         )
 
     async def start_background(self, bot: Any) -> None:

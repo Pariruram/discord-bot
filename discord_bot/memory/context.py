@@ -150,6 +150,7 @@ async def build_context(
     *,
     bot_user: Any | None = None,
     stats: dict[str, Any] | None = None,
+    clean_mode: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Return ``(system_prompt, chat_messages)`` for one reply.
 
@@ -228,6 +229,7 @@ async def build_context(
         is_dm=is_dm,
         bot_name=str(bot_user) if bot_user is not None else "",
         last_actions=last_actions,
+        clean=clean_mode,
     )
 
     if is_dm:

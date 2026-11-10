@@ -5,7 +5,7 @@ from typing import Any
 
 import discord
 
-from discord_bot.discord_app.chat import ChatService, _typing
+from discord_bot.discord_app.chat import ChatService, _typing, split_clean_marker
 from discord_bot.memory.models import IngestResult
 
 
@@ -22,7 +22,9 @@ class FakeMemory:
         self.ingested: list[Any] = []
         self.result = result
 
-    async def ingest(self, message: Any, incoming: Any) -> IngestResult | None:
+    async def ingest(
+        self, message: Any, incoming: Any, *, content: str | None = None
+    ) -> IngestResult | None:
         self.ingested.append((message, incoming))
         return self.result
 
@@ -141,3 +143,20 @@ async def test_typing_rate_limit_does_not_abort_the_reply() -> None:
 async def test_typing_without_a_channel_method_is_optional() -> None:
     async with _typing(SimpleNamespace()):
         pass
+
+
+def test_clean_marker_is_stripped_and_detected() -> None:
+    assert split_clean_marker("что случилось с ИИ /c") == ("что случилось с ИИ", True)
+    assert split_clean_marker("что случилось /CLEAN") == ("что случилось", True)
+
+
+def test_clean_marker_requires_boundaries_and_content() -> None:
+    # Обычный текст и URL не активируют режим.
+    text, clean = split_clean_marker("https://example.com/c")
+    assert clean is False
+    text, clean = split_clean_marker("просто сообщение")
+    assert clean is False
+
+    # «Голый» маркер — не режим, остаёмся в обычном ответе.
+    text, clean = split_clean_marker("/c")
+    assert (text, clean) == ("/c", False)

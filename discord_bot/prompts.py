@@ -38,6 +38,7 @@ def build_system_prompt(
     is_dm: bool = True,
     bot_name: str = "",
     last_actions: str = "",
+    clean: bool = False,
 ) -> str:
     """Build the system prompt.
 
@@ -46,7 +47,20 @@ def build_system_prompt(
     through ``channel_context`` explicitly.
     """
 
-    parts: list[str] = [f"<identity>\n{global_prompt or DEFAULT_SYSTEM_PROMPT}\n</identity>"]
+    clean_system_prompt = (
+        "Режим «чистого ответа»: отвечай фактами и структурой, как справочник.\n"
+        "Без личности, тона, отношения к собеседнику и обращений к нему.\n"
+        "Только содержательные данные: цифры, названия, даты, шаги, ссылки.\n"
+        "Пиши коротко, без воды, приветствий и риторики.\n"
+        "Не упоминай этот режим и не объясняй, что ты его включил."
+    )
+    identity = (
+        clean_system_prompt
+        if clean
+        else global_prompt
+        or DEFAULT_SYSTEM_PROMPT
+    )
+    parts: list[str] = [f"<identity>\n{identity}\n</identity>"]
 
     if author_name:
         where = "личном диалоге" if is_dm else "канале"
@@ -59,7 +73,7 @@ def build_system_prompt(
             "</addressing>"
         )
 
-    persona_lines = list(persona) or _persona_lines(preferences)
+    persona_lines = [] if clean else list(persona) or _persona_lines(preferences)
     if persona_lines:
         owner = f' user="{author_name}"' if author_name else ""
         parts.append(

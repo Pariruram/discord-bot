@@ -30,6 +30,37 @@ def test_prompt_without_last_actions_has_no_block() -> None:
     assert "<bot_last_actions>" not in prompt
 
 
+def test_clean_prompt_replaces_identity_and_drops_persona() -> None:
+    prompt = build_system_prompt(
+        "Ты — саркастичный кот.",
+        author_name="Аня",
+        author_id="101",
+        persona=["- стиль: сарказм"],
+        facts=["любит Python"],
+        clean=True,
+    )
+
+    assert "<identity>" in prompt
+    assert "саркастичный кот" not in prompt
+    assert "Режим «чистого ответа»" in prompt
+    assert "<persona" not in prompt
+    # Контекст остаётся: факты — это знания, а не тон.
+    assert '<known_facts about="Аня">' in prompt
+
+
+def test_normal_prompt_keeps_the_identity_and_persona() -> None:
+    prompt = build_system_prompt(
+        "Ты — саркастичный кот.",
+        author_name="Аня",
+        author_id="101",
+        persona=["- стиль: сарказм"],
+        clean=False,
+    )
+
+    assert "саркастичный кот" in prompt
+    assert "<persona" in prompt
+
+
 def test_prompt_keeps_identity_and_author_separate_from_transcript() -> None:
     prompt = build_system_prompt(
         "Ты — тестовый ассистент.",
