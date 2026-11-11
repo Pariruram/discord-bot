@@ -48,6 +48,8 @@ class ToolContext:
     # A user-supplied SVG attachment to improve (already validated as XML).
     source_svg: str = ""
     source_svg_name: str = ""
+    # ``/pixel`` at the end of the user message: convert the drawing.
+    force_pixel_art: bool = False
 
 
 @dataclass(frozen=True, slots=True)

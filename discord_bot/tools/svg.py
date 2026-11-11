@@ -20,6 +20,16 @@ from typing import Any
 
 from defusedxml import ElementTree as ET
 
+from discord_bot.discord_app.pixel_art import (
+    DEFAULT_COLORS,
+    DEFAULT_GRID,
+    MAX_COLORS,
+    MAX_GRID,
+    MIN_COLORS,
+    MIN_GRID,
+    PixelArtError,
+    pixelate,
+)
 from discord_bot.llm.client import LLMError
 from discord_bot.tools.base import GeneratedFile, Tool, ToolContext
 from discord_bot.utils import safe_int
@@ -57,7 +67,8 @@ DESCRIPTION = (
     "Не используй для фотографий и реалистичных изображений — это векторная "
     "графика. Параметр prompt — подробное описание: что изобразить или что "
     "именно улучшить, стиль, цвета, подписи, композиция. attach_svg=true только "
-    "если пользователь явно просит SVG/вектор/исходник для редактирования."
+    "если пользователь явно просит SVG/вектор/исходник для редактирования. "
+    "pixel_art=true если просят пиксель-арт/пикселизировать."
 )
 
 SVG_MASTER_PROMPT = """Ты — SVG Master, профессиональный векторный иллюстратор и инженер SVG.
@@ -122,6 +133,7 @@ _VISUAL_REQUEST_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _SVG_SOURCE_RE = re.compile(r"\bsvg\b|вектор|исходник", re.IGNORECASE)
+_PIXEL_ART_RE = re.compile(r"\bпиксел\w*|\bpixel(?:\s*art)?\b", re.IGNORECASE)
 _IMPROVE_ACTION_RE = re.compile(
     r"\b(улучш\w*|перерисуй\w*|исправ\w*|доделай\w*|переделай\w*|"
     r"отредактируй\w*|improve\w*|redraw\w*|fix\w*)\b"
@@ -145,6 +157,10 @@ def is_svg_improvement_request(text: str, has_source: bool) -> bool:
 
 def wants_svg_source(text: str) -> bool:
     return bool(_SVG_SOURCE_RE.search(text or ""))
+
+
+def wants_pixel_art(text: str) -> bool:
+    return bool(_PIXEL_ART_RE.search(text or ""))
 _URL_FUNC_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE)
 
 
@@ -348,7 +364,10 @@ def build_tool(
     last_draw: dict[str, float] = {}
 
     async def draw_svg(
-        context: ToolContext, prompt: str, attach_svg: bool = False
+        context: ToolContext,
+        prompt: str,
+        attach_svg: bool = False,
+        pixel_art: bool = False,
     ) -> str:
         description = (prompt or "").strip()
         if not description and context.source_svg:
@@ -411,12 +430,44 @@ def build_tool(
 
         if len(png) > MAX_PNG_BYTES:
             return "Не удалось нарисовать: PNG получился больше 3 МБ."
+        use_pixel = bool(pixel_art or context.force_pixel_art)
+        grid = safe_int(
+            context.settings.get("pixel_grid"),
+            DEFAULT_GRID,
+            minimum=MIN_GRID,
+            maximum=MAX_GRID,
+        )
+        colors = safe_int(
+            context.settings.get("pixel_colors"),
+            DEFAULT_COLORS,
+            minimum=MIN_COLORS,
+            maximum=MAX_COLORS,
+        )
+        if use_pixel:
+            try:
+                png = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        pixelate, png, grid=grid, colors=colors
+                    ),
+                    timeout=RENDER_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                return "Не удалось сделать пиксель-арт: таймаут."
+            except PixelArtError as exc:
+                return f"Не удалось сделать пиксель-арт: {exc}."
+            except Exception:  # noqa: BLE001 - conversion must not break the chat
+                logger.exception("Ошибка пиксель-арта")
+                return "Не удалось сделать пиксель-арт: внутренняя ошибка."
+            if len(png) > MAX_PNG_BYTES:
+                return "Не удалось сделать пиксель-арт: PNG больше 3 МБ."
         try:
             width, height = png_size(png)
         except SvgError as exc:
             return f"Не удалось нарисовать: {exc}."
 
         stem = f"drawing-{uuid.uuid4().hex[:8]}"
+        if use_pixel:
+            stem += "-pixel"
         context.files.append(
             GeneratedFile(f"{stem}.png", png, mime="image/png")
         )
@@ -436,8 +487,14 @@ def build_tool(
             suffix = " Исходный SVG прикреплён."
         else:
             suffix = ""
+        kind = (
+            f"Пиксель-арт: PNG {width}×{height}, сетка {grid} px, "
+            f"{colors} цветов"
+            if use_pixel
+            else f"Готово: PNG {width}×{height}"
+        )
         return (
-            f"Готово: PNG {width}×{height}, {max(1, len(png) // 1024)} КБ, "
+            f"{kind}, {max(1, len(png) // 1024)} КБ, "
             f"модель {model}. Файл прикреплён к ответу.{suffix}"
         )
 
@@ -460,6 +517,14 @@ def build_tool(
                     "description": (
                         "true только если пользователь явно просит SVG, "
                         "векторный исходник или файл для редактирования."
+                    ),
+                    "default": False,
+                },
+                "pixel_art": {
+                    "type": "boolean",
+                    "description": (
+                        "true если пользователь просит пиксель-арт, "
+                        "пикселизацию или ретро-стиль."
                     ),
                     "default": False,
                 },

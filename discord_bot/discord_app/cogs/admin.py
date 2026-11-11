@@ -57,6 +57,8 @@ ALLOWED_SETTINGS = {
     "auto_links_max",
     "svg_model",
     "svg_cooldown_seconds",
+    "pixel_grid",
+    "pixel_colors",
 }
 
 MODEL_SETTING_KEYS = {
@@ -85,6 +87,8 @@ NUMERIC_SETTINGS = {
     "catch_up_limit": (0, 500),
     "auto_links_max": (1, 3),
     "svg_cooldown_seconds": (0, 600),
+    "pixel_grid": (32, 128),
+    "pixel_colors": (8, 32),
 }
 
 

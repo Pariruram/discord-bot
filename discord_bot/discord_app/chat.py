@@ -40,6 +40,7 @@ from discord_bot.tools.fetch_url import ReadResult, read_url
 from discord_bot.tools.svg import (
     is_drawing_request,
     is_svg_improvement_request,
+    wants_pixel_art,
     wants_svg_source,
 )
 from discord_bot.utils import as_bool, safe_int, split_message
@@ -50,12 +51,14 @@ MAX_DISCORD_MESSAGE = 2000
 
 # ``/c`` (or ``/clean``) at the very end asks for a factual, persona-free
 # answer while keeping the whole conversational context. ``/svg`` at the end
-# asks to attach the vector source of a drawing.
-END_MARKER_RE = re.compile(r"(?:^|\s)/(clean|c|svg)\s*$", re.IGNORECASE)
+# asks to attach the vector source of a drawing; ``/pixel`` asks for pixel art.
+END_MARKER_RE = re.compile(
+    r"(?:^|\s)/(clean|c|svg|pixel)\s*$", re.IGNORECASE
+)
 
 
-def split_end_markers(text: str) -> tuple[str, bool, bool]:
-    """Strip trailing ``/c``/``/clean`` and ``/svg``; return ``(text, clean, svg)``.
+def split_end_markers(text: str) -> tuple[str, bool, bool, bool]:
+    """Strip trailing modes; return ``(text, clean, svg, pixel)``.
 
     A bare marker (nothing left after stripping) is not a mode switch, and
     neither is a message that merely ends with ``.com/svg`` — the slash must be
@@ -64,6 +67,7 @@ def split_end_markers(text: str) -> tuple[str, bool, bool]:
 
     clean = False
     svg = False
+    pixel = False
     value = text
     while True:
         match = END_MARKER_RE.search(value)
@@ -75,16 +79,18 @@ def split_end_markers(text: str) -> tuple[str, bool, bool]:
         marker = match.group(1).lower()
         if marker == "svg":
             svg = True
+        elif marker == "pixel":
+            pixel = True
         else:
             clean = True
         value = stripped
-    return value, clean, svg
+    return value, clean, svg, pixel
 
 
 def split_clean_marker(text: str) -> tuple[str, bool]:
     """Backward-compatible wrapper returning only the clean flag."""
 
-    value, clean, _ = split_end_markers(text)
+    value, clean, _, _ = split_end_markers(text)
     return value, clean
 
 
@@ -175,7 +181,7 @@ class ChatService:
             # that actually involve it, never ambient chatter in every channel.
             return
 
-        user_text, clean_mode, svg_source = split_end_markers(
+        user_text, clean_mode, svg_source, pixel_art = split_end_markers(
             message.content or ""
         )
         image_parts, image_note = await collect_image_parts(message)
@@ -254,6 +260,7 @@ class ChatService:
                 force_svg_source=svg_source,
                 source_svg=source_svg.content,
                 source_svg_name=source_svg.filename,
+                force_pixel_art=pixel_art,
             )
             for link in link_results:
                 tool_context.citations.append(
@@ -280,6 +287,7 @@ class ChatService:
                 settings.get("enabled_tools"), self.registry
             )
             has_source_svg = bool(source_svg.content)
+            pixel_requested = bool(pixel_art or wants_pixel_art(user_text))
             if "draw_svg" in enabled:
                 rule = (
                     "Никогда не выводи SVG/HTML-код для рисунка "
@@ -292,15 +300,19 @@ class ChatService:
                         "улучшить/перерисовать/исправить, вызови draw_svg — "
                         "исходник уже передан инструменту, не вставляй его в чат."
                     )
+                if pixel_requested:
+                    rule += " Если просят пиксель-арт, установи pixel_art=true."
                 messages[0]["content"] = (
                     f"{messages[0]['content']}\n\n"
                     f"<drawing_rule>{rule}</drawing_rule>"
                 )
             forced_tool = None
             if "draw_svg" in enabled:
-                if is_svg_improvement_request(
-                    user_text, has_source_svg
-                ) or is_drawing_request(user_text):
+                if (
+                    is_svg_improvement_request(user_text, has_source_svg)
+                    or is_drawing_request(user_text)
+                    or pixel_art
+                ):
                     forced_tool = "draw_svg"
             if forced_tool == "draw_svg":
                 attach = (
@@ -310,12 +322,14 @@ class ChatService:
                     or wants_svg_source(user_text)
                     else "false"
                 )
+                pixel = "true" if pixel_requested else "false"
                 messages[0]["content"] = (
                     f"{messages[0]['content']}\n\n"
                     "<drawing_request>Пользователь явно просит рисунок. "
                     "Вызови draw_svg; не выводи SVG-код в чат. "
-                    f"attach_svg={attach}. Если инструмент вернул ошибку, "
-                    "объясни её коротко.</drawing_request>"
+                    f"attach_svg={attach}. pixel_art={pixel}. "
+                    "Если инструмент вернул ошибку, объясни её коротко."
+                    "</drawing_request>"
                 )
             max_tokens = safe_int(
                 settings.get("max_tokens"), 1200, minimum=200, maximum=4000

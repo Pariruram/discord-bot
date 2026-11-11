@@ -192,3 +192,19 @@ async def test_question_about_the_svg_does_not_force_a_redraw(monkeypatch) -> No
 
     assert llm.calls[0]["tool_choice"] == "auto"
     assert registry.contexts == []
+
+
+async def test_pixel_marker_reaches_the_tool_context(monkeypatch) -> None:
+    chat, _, llm, registry = build(
+        monkeypatch, [response(tool_calls=[tool_call()]), response(content="Готово")]
+    )
+
+    await chat._handle(dm("нарисуй краба /pixel"))
+
+    assert llm.calls[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "draw_svg"},
+    }
+    assert llm.messages is not None
+    assert "pixel_art=true" in llm.messages[0]["content"]
+    assert registry.contexts[0].force_pixel_art is True
