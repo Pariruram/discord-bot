@@ -21,10 +21,13 @@ from typing import Any
 from defusedxml import ElementTree as ET
 
 from discord_bot.discord_app.pixel_art import (
+    DEFAULT_BLOCK,
     DEFAULT_COLORS,
     DEFAULT_GRID,
+    MAX_BLOCK,
     MAX_COLORS,
     MAX_GRID,
+    MIN_BLOCK,
     MIN_COLORS,
     MIN_GRID,
     PixelArtError,
@@ -443,11 +446,21 @@ def build_tool(
             minimum=MIN_COLORS,
             maximum=MAX_COLORS,
         )
+        block = safe_int(
+            context.settings.get("pixel_block"),
+            DEFAULT_BLOCK,
+            minimum=MIN_BLOCK,
+            maximum=MAX_BLOCK,
+        )
         if use_pixel:
             try:
                 png = await asyncio.wait_for(
                     asyncio.to_thread(
-                        pixelate, png, grid=grid, colors=colors
+                        pixelate,
+                        png,
+                        grid=grid,
+                        colors=colors,
+                        block=block,
                     ),
                     timeout=RENDER_TIMEOUT_SECONDS,
                 )
@@ -489,7 +502,7 @@ def build_tool(
             suffix = ""
         kind = (
             f"Пиксель-арт: PNG {width}×{height}, сетка {grid} px, "
-            f"{colors} цветов"
+            f"блок {block} px, {colors} цветов"
             if use_pixel
             else f"Готово: PNG {width}×{height}"
         )

@@ -41,23 +41,30 @@ def test_pixelate_produces_crisp_blocks_and_a_small_palette() -> None:
     result = pixelate(sample_png(), grid=32, colors=8)
 
     with Image.open(io.BytesIO(result)) as image:
-        assert image.size == (768, 384)
+        assert image.size == (128, 64)
         colors = image.convert("RGB").getcolors(maxcolors=1000)
         assert colors is not None
         assert len(colors) <= 8
         top_left = image.getpixel((0, 0))
         assert image.getpixel((10, 10)) == top_left
         assert image.getpixel((23, 23)) == top_left
-        assert image.getpixel((383, 10)) == top_left
-        assert image.getpixel((384, 10)) != top_left
+        assert image.getpixel((63, 10)) == top_left
+        assert image.getpixel((64, 10)) != top_left
 
 
 def test_pixelate_handles_a_tall_image() -> None:
-    result = pixelate(sample_png(100, 300), grid=64, colors=16)
+    result = pixelate(sample_png(100, 300), grid=32, colors=16)
 
     with Image.open(io.BytesIO(result)) as image:
-        assert image.height == 768
-        assert image.width <= 768
+        assert image.height == 128
+        assert image.width <= 128
+
+
+def test_default_square_is_128_by_128() -> None:
+    result = pixelate(sample_png(100, 100))
+
+    with Image.open(io.BytesIO(result)) as image:
+        assert image.size == (128, 128)
 
 
 def test_pixelate_rejects_non_png_data() -> None:
@@ -99,7 +106,9 @@ async def test_draw_tool_attaches_a_pixel_art_png() -> None:
     result = await tool.handler(context, "краб", pixel_art=True)
 
     assert "Пиксель-арт" in result
+    assert "PNG 128×64" in result
     assert "сетка 32 px" in result
+    assert "блок 4 px" in result
     assert len(context.files) == 1
     assert context.files[0].filename.endswith("-pixel.png")
     assert context.files[0].data.startswith(b"\x89PNG")
@@ -127,5 +136,6 @@ async def test_force_pixel_art_from_the_marker_is_honoured() -> None:
     result = await tool.handler(context, "краб", pixel_art=False)
 
     assert "Пиксель-арт" in result
+    assert "блок 4 px" in result
     assert len(context.files) == 1
     assert context.files[0].filename.endswith("-pixel.png")

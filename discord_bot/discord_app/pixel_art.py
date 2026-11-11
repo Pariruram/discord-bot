@@ -1,4 +1,4 @@
-"""Turn a rendered PNG into crisp pixel art with Palette + nearest-neighbor."""
+"""Turn a rendered PNG into crisp pixel art with a fixed block size."""
 
 from __future__ import annotations
 
@@ -9,13 +9,15 @@ from PIL import Image, UnidentifiedImageError
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_GRID = 64
+DEFAULT_GRID = 32
 DEFAULT_COLORS = 16
-MIN_GRID = 32
+DEFAULT_BLOCK = 4
+MIN_GRID = 16
 MAX_GRID = 128
 MIN_COLORS = 8
 MAX_COLORS = 32
-MAX_OUTPUT_SIDE = 768
+MIN_BLOCK = 2
+MAX_BLOCK = 24
 MAX_OUTPUT_BYTES = 3 * 1024 * 1024
 
 
@@ -28,18 +30,21 @@ def pixelate(
     *,
     grid: int = DEFAULT_GRID,
     colors: int = DEFAULT_COLORS,
+    block: int = DEFAULT_BLOCK,
 ) -> bytes:
     """Downscale, quantize and nearest-upscale a PNG.
 
-    ``grid`` is the target width in pixels; the height follows the aspect
-    ratio. The result is upscaled to at most 768 px so Discord shows crisp
-    square blocks instead of a tiny smoothed image.
+    ``grid`` is the number of pixels along the *longest* side; ``block`` is
+    the physical size of every output pixel. With the defaults (32 and 4) the
+    largest output side is exactly 128 px, and every pixel is 4×4 regardless
+    of the source aspect ratio.
     """
 
     if not png.startswith(b"\x89PNG\r\n\x1a\n"):
         raise PixelArtError("на входе не PNG")
     grid = max(MIN_GRID, min(MAX_GRID, grid))
     colors = max(MIN_COLORS, min(MAX_COLORS, colors))
+    block = max(MIN_BLOCK, min(MAX_BLOCK, block))
 
     try:
         with Image.open(io.BytesIO(png)) as source:
@@ -49,12 +54,14 @@ def pixelate(
             background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
             rgb = Image.alpha_composite(background, rgba).convert("RGB")
 
-            target_w = grid
-            target_h = max(1, round(rgb.height * target_w / rgb.width))
-            if target_h > MAX_GRID:
-                scale = MAX_GRID / target_h
+            long_side = max(rgb.width, rgb.height)
+            target_w = max(1, round(rgb.width * grid / long_side))
+            target_h = max(1, round(rgb.height * grid / long_side))
+            longest = max(target_w, target_h)
+            if longest > grid:
+                scale = grid / longest
                 target_w = max(1, round(target_w * scale))
-                target_h = MAX_GRID
+                target_h = max(1, round(target_h * scale))
 
             small = rgb.resize(
                 (target_w, target_h), Image.Resampling.BOX
@@ -65,9 +72,8 @@ def pixelate(
                 dither=Image.Dither.NONE,
             ).convert("RGB")
 
-            factor = max(1, MAX_OUTPUT_SIDE // max(target_w, target_h))
             output = quantized.resize(
-                (target_w * factor, target_h * factor),
+                (target_w * block, target_h * block),
                 Image.Resampling.NEAREST,
             )
             buffer = io.BytesIO()

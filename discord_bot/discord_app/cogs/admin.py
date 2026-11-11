@@ -59,6 +59,7 @@ ALLOWED_SETTINGS = {
     "svg_cooldown_seconds",
     "pixel_grid",
     "pixel_colors",
+    "pixel_block",
     "search_max_results",
 }
 
@@ -88,8 +89,9 @@ NUMERIC_SETTINGS = {
     "catch_up_limit": (0, 500),
     "auto_links_max": (1, 3),
     "svg_cooldown_seconds": (0, 600),
-    "pixel_grid": (32, 128),
+    "pixel_grid": (16, 128),
     "pixel_colors": (8, 32),
+    "pixel_block": (2, 24),
     "search_max_results": (1, 10),
 }
 
