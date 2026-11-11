@@ -52,6 +52,8 @@ class ToolContext:
     force_pixel_art: bool = False
     # ``/pixel+``: attach both the original PNG and the pixel-art version.
     force_pixel_plus: bool = False
+    # ``/pixel-test``: native pixel-art SVG instead of post-processing.
+    force_pixel_test: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -31,13 +31,15 @@ def pixelate(
     grid: int = DEFAULT_GRID,
     colors: int = DEFAULT_COLORS,
     block: int = DEFAULT_BLOCK,
+    nearest: bool = False,
 ) -> bytes:
     """Downscale, quantize and nearest-upscale a PNG.
 
     ``grid`` is the number of pixels along the *longest* side; ``block`` is
     the physical size of every output pixel. With the defaults (32 and 4) the
     largest output side is exactly 128 px, and every pixel is 4×4 regardless
-    of the source aspect ratio.
+    of the source aspect ratio. ``nearest`` preserves a native pixel grid
+    instead of averaging it with BOX.
     """
 
     if not png.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -64,7 +66,10 @@ def pixelate(
                 target_h = max(1, round(target_h * scale))
 
             small = rgb.resize(
-                (target_w, target_h), Image.Resampling.BOX
+                (target_w, target_h),
+                Image.Resampling.NEAREST
+                if nearest
+                else Image.Resampling.BOX,
             )
             quantized = small.quantize(
                 colors=colors,

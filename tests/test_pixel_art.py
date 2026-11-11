@@ -93,7 +93,7 @@ async def test_draw_tool_attaches_a_pixel_art_png() -> None:
             '<rect width="10" height="10"/></svg>'
         )
 
-    tool = build_tool(generator=generate, renderer=lambda svg: png)
+    tool = build_tool(generator=generate, renderer=lambda svg, width: png)
     context = ToolContext(
         user_id="u1",
         channel_id="c1",
@@ -123,7 +123,7 @@ async def test_force_pixel_art_from_the_marker_is_honoured() -> None:
             '<rect width="10" height="10"/></svg>'
         )
 
-    tool = build_tool(generator=generate, renderer=lambda svg: png)
+    tool = build_tool(generator=generate, renderer=lambda svg, width: png)
     context = ToolContext(
         user_id="u1",
         channel_id="c1",
@@ -150,7 +150,7 @@ async def test_pixel_plus_attaches_original_and_pixel() -> None:
             '<rect width="10" height="10"/></svg>'
         )
 
-    tool = build_tool(generator=generate, renderer=lambda svg: png)
+    tool = build_tool(generator=generate, renderer=lambda svg, width: png)
     context = ToolContext(
         user_id="u1",
         channel_id="c1",
@@ -174,11 +174,11 @@ async def test_pixel_plus_with_source_svg_attaches_three_files() -> None:
 
     async def generate(description: str, ctx: ToolContext) -> str:
         return (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
-            '<rect width="10" height="10"/></svg>'
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+            '<rect width="32" height="32"/></svg>'
         )
 
-    tool = build_tool(generator=generate, renderer=lambda svg: png)
+    tool = build_tool(generator=generate, renderer=lambda svg, width: png)
     context = ToolContext(
         user_id="u1",
         channel_id="c1",
@@ -193,3 +193,35 @@ async def test_pixel_plus_with_source_svg_attaches_three_files() -> None:
     assert "Исходный SVG прикреплён" in result
     assert len(context.files) == 3
     assert context.files[2].filename.endswith(".svg")
+
+
+async def test_native_pixel_mode_renders_at_a_grid_multiple() -> None:
+    png = sample_png()
+    widths: list[int] = []
+
+    async def generate(description: str, ctx: ToolContext) -> str:
+        return (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+            '<rect width="32" height="32"/></svg>'
+        )
+
+    def render(svg: str, width: int = 1200) -> bytes:
+        widths.append(width)
+        return png
+
+    tool = build_tool(generator=generate, renderer=render)
+    context = ToolContext(
+        user_id="u1",
+        channel_id="c1",
+        settings={"pixel_grid": "32", "pixel_colors": "8"},
+        provider=SimpleNamespace(name="gemini", default_model="x"),
+        model="gemini-3.5-flash-lite",
+        force_pixel_test=True,
+    )
+
+    result = await tool.handler(context, "краб")
+
+    assert widths == [768]
+    assert "Нативный пиксель-арт" in result
+    assert len(context.files) == 2
+    assert context.files[1].filename.endswith("-pixel.png")

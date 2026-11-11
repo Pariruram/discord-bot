@@ -190,12 +190,29 @@ async def test_generator_sends_the_source_as_untrusted_data() -> None:
     assert user_message.count("</source_svg>") == 1
 
 
+async def test_generator_uses_the_native_pixel_prompt() -> None:
+    llm = FakeLLM()
+    ctx = context(
+        llm=llm,
+        source_svg="",
+        force_pixel_test=True,
+    )
+
+    await generate_svg("краб", ctx)
+
+    system = llm.calls[0]["messages"][0]["content"]
+    user_message = llm.calls[0]["messages"][1]["content"]
+    assert "НАТИВНОГО ПИКСЕЛЬ-АРТА" in system
+    assert 'viewBox="0 0 32 32"' in system
+    assert "Нарисуй нативный пиксель-арт" in user_message
+
+
 async def test_tool_improves_a_source_and_attaches_both_files() -> None:
     async def generate(description: str, ctx: ToolContext) -> str:
         assert "Улучши" in description
         return VALID_SVG
 
-    def render(svg: str) -> bytes:
+    def render(svg: str, width: int = 1200) -> bytes:
         return (
             b"\x89PNG\r\n\x1a\n"
             + b"\x00" * 8
@@ -222,7 +239,7 @@ async def test_tool_defaults_a_missing_improvement_instruction() -> None:
 
     tool = build_tool(
         generator=generate,
-        renderer=lambda svg: (
+        renderer=lambda svg, width: (
             b"\x89PNG\r\n\x1a\n"
             + b"\x00" * 8
             + (1).to_bytes(4, "big")

@@ -220,3 +220,15 @@ async def test_pixel_plus_marker_keeps_the_original(monkeypatch) -> None:
     assert llm.messages is not None
     assert "оригинальный PNG" in llm.messages[0]["content"]
     assert registry.contexts[0].force_pixel_plus is True
+
+
+async def test_pixel_test_marker_selects_native_mode(monkeypatch) -> None:
+    chat, _, llm, registry = build(
+        monkeypatch, [response(tool_calls=[tool_call()]), response(content="Готово")]
+    )
+
+    await chat._handle(dm("нарисуй краба /pixel-test"))
+
+    assert llm.messages is not None
+    assert "оригинальный PNG" in llm.messages[0]["content"]
+    assert registry.contexts[0].force_pixel_test is True

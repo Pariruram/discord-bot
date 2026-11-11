@@ -162,7 +162,7 @@ async def test_tool_renders_and_attaches_a_png() -> None:
     async def generate(description: str, ctx: ToolContext) -> str:
         return VALID_SVG
 
-    tool = build_tool(generator=generate, renderer=lambda svg: fake_png())
+    tool = build_tool(generator=generate, renderer=lambda svg, width: fake_png())
     ctx = context()
 
     result = await tool.handler(ctx, "схема RAG")
@@ -179,7 +179,7 @@ async def test_tool_attaches_the_source_only_on_request() -> None:
     async def generate(description: str, ctx: ToolContext) -> str:
         return VALID_SVG
 
-    tool = build_tool(generator=generate, renderer=lambda svg: fake_png())
+    tool = build_tool(generator=generate, renderer=lambda svg, width: fake_png())
     ctx = context()
 
     result = await tool.handler(ctx, "схема", attach_svg=True)
@@ -195,7 +195,7 @@ async def test_svg_marker_forces_the_source_even_if_the_model_skips_the_flag() -
     async def generate(description: str, ctx: ToolContext) -> str:
         return VALID_SVG
 
-    tool = build_tool(generator=generate, renderer=lambda svg: fake_png())
+    tool = build_tool(generator=generate, renderer=lambda svg, width: fake_png())
     ctx = context(force_svg_source=True)
 
     result = await tool.handler(ctx, "схема", attach_svg=False)
@@ -209,7 +209,7 @@ async def test_tool_rejects_a_too_long_prompt() -> None:
     async def generate(description: str, ctx: ToolContext) -> str:
         raise AssertionError("generator must not run")
 
-    tool = build_tool(generator=generate, renderer=lambda svg: fake_png())
+    tool = build_tool(generator=generate, renderer=lambda svg, width: fake_png())
 
     result = await tool.handler(context(), "x" * (MAX_PROMPT_CHARS + 1))
 
@@ -224,7 +224,7 @@ async def test_tool_cooldown_is_per_user() -> None:
 
     tool = build_tool(
         generator=generate,
-        renderer=lambda svg: fake_png(),
+        renderer=lambda svg, width: fake_png(),
         clock=lambda: now[0],
     )
     settings = {"svg_cooldown_seconds": "60"}
@@ -243,7 +243,7 @@ async def test_tool_respects_the_file_limit() -> None:
     async def generate(description: str, ctx: ToolContext) -> str:
         raise AssertionError("generator must not run")
 
-    tool = build_tool(generator=generate, renderer=lambda svg: fake_png())
+    tool = build_tool(generator=generate, renderer=lambda svg, width: fake_png())
     ctx = context()
     ctx.files.extend(
         [
@@ -262,7 +262,7 @@ async def test_source_svg_does_not_overflow_the_file_limit() -> None:
     async def generate(description: str, ctx: ToolContext) -> str:
         raise AssertionError("generator must not run")
 
-    tool = build_tool(generator=generate, renderer=lambda svg: fake_png())
+    tool = build_tool(generator=generate, renderer=lambda svg, width: fake_png())
     ctx = context()
     ctx.files.extend(
         [
@@ -302,7 +302,7 @@ async def test_generator_without_llm_context_fails_cleanly() -> None:
 def test_tool_is_registered_with_a_long_timeout() -> None:
     tool = build_tool(
         generator=lambda description, ctx: None,
-        renderer=lambda svg: fake_png(),
+        renderer=lambda svg, width: fake_png(),
     )
 
     assert tool.name == "draw_svg"

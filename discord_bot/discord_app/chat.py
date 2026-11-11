@@ -53,22 +53,21 @@ MAX_DISCORD_MESSAGE = 2000
 # answer while keeping the whole conversational context. ``/svg`` at the end
 # asks to attach the vector source of a drawing; ``/pixel`` asks for pixel art.
 END_MARKER_RE = re.compile(
-    r"(?:^|\s)/(clean|c|svg|pixel\+|pixel)\s*$", re.IGNORECASE
+    r"(?:^|\s)/(clean|c|svg|pixel-test|pixel\+|pixel)\s*$",
+    re.IGNORECASE,
 )
 
 
-def split_end_markers(text: str) -> tuple[str, bool, bool, bool, bool]:
-    """Strip trailing modes; return ``(text, clean, svg, pixel, pixel_plus)``.
-
-    A bare marker (nothing left after stripping) is not a mode switch, and
-    neither is a message that merely ends with ``.com/svg`` — the slash must be
-    preceded by a boundary, which URLs never provide.
-    """
+def split_end_markers(
+    text: str,
+) -> tuple[str, bool, bool, bool, bool, bool]:
+    """Return ``(text, clean, svg, pixel, pixel_plus, pixel_test)``."""
 
     clean = False
     svg = False
     pixel = False
     pixel_plus = False
+    pixel_test = False
     value = text
     while True:
         match = END_MARKER_RE.search(value)
@@ -82,18 +81,20 @@ def split_end_markers(text: str) -> tuple[str, bool, bool, bool, bool]:
             svg = True
         elif marker == "pixel+":
             pixel_plus = True
+        elif marker == "pixel-test":
+            pixel_test = True
         elif marker == "pixel":
             pixel = True
         else:
             clean = True
         value = stripped
-    return value, clean, svg, pixel, pixel_plus
+    return value, clean, svg, pixel, pixel_plus, pixel_test
 
 
 def split_clean_marker(text: str) -> tuple[str, bool]:
     """Backward-compatible wrapper returning only the clean flag."""
 
-    value, clean, _, _, _ = split_end_markers(text)
+    value, clean, _, _, _, _ = split_end_markers(text)
     return value, clean
 
 
@@ -184,7 +185,7 @@ class ChatService:
             # that actually involve it, never ambient chatter in every channel.
             return
 
-        user_text, clean_mode, svg_source, pixel_art, pixel_plus = (
+        user_text, clean_mode, svg_source, pixel_art, pixel_plus, pixel_test = (
             split_end_markers(message.content or "")
         )
         image_parts, image_note = await collect_image_parts(message)
@@ -265,6 +266,7 @@ class ChatService:
                 source_svg_name=source_svg.filename,
                 force_pixel_art=pixel_art,
                 force_pixel_plus=pixel_plus,
+                force_pixel_test=pixel_test,
             )
             for link in link_results:
                 tool_context.citations.append(
@@ -292,7 +294,10 @@ class ChatService:
             )
             has_source_svg = bool(source_svg.content)
             pixel_requested = bool(
-                pixel_art or pixel_plus or wants_pixel_art(user_text)
+                pixel_art
+                or pixel_plus
+                or pixel_test
+                or wants_pixel_art(user_text)
             )
             if "draw_svg" in enabled:
                 rule = (
@@ -319,6 +324,7 @@ class ChatService:
                     or is_drawing_request(user_text)
                     or pixel_art
                     or pixel_plus
+                    or pixel_test
                 ):
                     forced_tool = "draw_svg"
             if forced_tool == "draw_svg":
@@ -332,7 +338,7 @@ class ChatService:
                 pixel = "true" if pixel_requested else "false"
                 plus = (
                     " Верни и оригинальный PNG, и пиксель-арт."
-                    if pixel_plus
+                    if pixel_plus or pixel_test
                     else ""
                 )
                 messages[0]["content"] = (
