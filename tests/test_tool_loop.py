@@ -5,7 +5,12 @@ from discord_bot.llm.errors import ErrorKind, LLMError
 from discord_bot.llm.models import ModelRef
 from discord_bot.llm.providers import ProviderSpec
 from discord_bot.llm.tool_loop import run_tool_loop
-from discord_bot.tools.base import Tool, ToolContext, ToolRegistry
+from discord_bot.tools.base import (
+    GeneratedFile,
+    Tool,
+    ToolContext,
+    ToolRegistry,
+)
 
 SPEC = ProviderSpec(
     name="groq",
@@ -196,6 +201,44 @@ async def test_forced_tool_falls_back_to_auto_on_bad_request() -> None:
 
     assert result == "fallback"
     assert llm.calls[-1]["tool_choice"] == "auto"
+
+
+async def test_empty_reply_with_a_generated_file_gets_a_caption() -> None:
+    registry = ToolRegistry(timeout=1.0)
+
+    async def draw(context: ToolContext) -> str:
+        context.files.append(GeneratedFile("drawing.png", b"png"))
+        return "drawn"
+
+    registry.register(
+        Tool(
+            name="draw",
+            description="draw",
+            parameters={"type": "object", "properties": {}},
+            handler=draw,
+        )
+    )
+    llm = FakeLLM(
+        [
+            response(tool_calls=[tool_call("call-1", "draw", "{}")]),
+            response(content=None),
+        ]
+    )
+    context = ToolContext(user_id="1", channel_id="2")
+
+    result = await run_tool_loop(llm, SPEC, MODEL_REF, [], registry, ["draw"], context)
+
+    assert result == "Готово — файл прикреплён к ответу."
+
+
+async def test_empty_reply_without_files_keeps_the_generic_fallback() -> None:
+    llm = FakeLLM([response(content="   ")])
+
+    result = await run_tool_loop(
+        llm, SPEC, MODEL_REF, [], make_registry(), [], CONTEXT
+    )
+
+    assert result == "Извини, не удалось сформировать ответ."
 
 
 async def test_tool_context_collects_citations() -> None:

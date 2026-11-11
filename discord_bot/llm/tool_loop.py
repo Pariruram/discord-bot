@@ -30,6 +30,19 @@ def _serialize_tool_call(tool_call: Any) -> dict[str, Any]:
     }
 
 
+def _finish(
+    content: str | None, context: ToolContext, fallback: str
+) -> str:
+    text = (content or "").strip()
+    if text:
+        return text
+    if context.files:
+        # The drawing (or another generated file) already exists; losing the
+        # model's caption must not turn it into "failed to form a reply".
+        return "Готово — файл прикреплён к ответу."
+    return fallback
+
+
 async def run_tool_loop(
     llm: LLMClient,
     spec: ProviderSpec,
@@ -94,8 +107,8 @@ async def run_tool_loop(
         tool_calls = getattr(message, "tool_calls", None) or []
 
         if not tool_calls:
-            content = (getattr(message, "content", None) or "").strip()
-            return content or fallback
+            content = getattr(message, "content", None)
+            return _finish(content, context, fallback)
 
         assistant_message: dict[str, Any] = {
             "role": "assistant",
@@ -126,5 +139,5 @@ async def run_tool_loop(
         temperature=temperature,
         max_tokens=max_tokens,
     )
-    content = (getattr(final.choices[0].message, "content", None) or "").strip()
-    return content or fallback
+    content = getattr(final.choices[0].message, "content", None)
+    return _finish(content, context, fallback)
