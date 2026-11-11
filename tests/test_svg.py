@@ -191,6 +191,20 @@ async def test_tool_attaches_the_source_only_on_request() -> None:
     assert "Исходный SVG" in result
 
 
+async def test_svg_marker_forces_the_source_even_if_the_model_skips_the_flag() -> None:
+    async def generate(description: str, ctx: ToolContext) -> str:
+        return VALID_SVG
+
+    tool = build_tool(generator=generate, renderer=lambda svg: fake_png())
+    ctx = context(force_svg_source=True)
+
+    result = await tool.handler(ctx, "схема", attach_svg=False)
+
+    assert len(ctx.files) == 2
+    assert ctx.files[1].filename.endswith(".svg")
+    assert "Исходный SVG" in result
+
+
 async def test_tool_rejects_a_too_long_prompt() -> None:
     async def generate(description: str, ctx: ToolContext) -> str:
         raise AssertionError("generator must not run")

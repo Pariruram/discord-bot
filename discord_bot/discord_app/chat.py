@@ -44,25 +44,43 @@ logger = logging.getLogger(__name__)
 MAX_DISCORD_MESSAGE = 2000
 
 # ``/c`` (or ``/clean``) at the very end asks for a factual, persona-free
-# answer while keeping the whole conversational context.
-CLEAN_MARKER_RE = re.compile(r"(?:^|\s)/(?:clean|c)\s*$", re.IGNORECASE)
+# answer while keeping the whole conversational context. ``/svg`` at the end
+# asks to attach the vector source of a drawing.
+END_MARKER_RE = re.compile(r"(?:^|\s)/(clean|c|svg)\s*$", re.IGNORECASE)
 
 
-def split_clean_marker(text: str) -> tuple[str, bool]:
-    """Strip a trailing ``/c`` marker; return ``(text, clean_mode)``.
+def split_end_markers(text: str) -> tuple[str, bool, bool]:
+    """Strip trailing ``/c``/``/clean`` and ``/svg``; return ``(text, clean, svg)``.
 
     A bare marker (nothing left after stripping) is not a mode switch, and
-    neither is a message that merely ends with ``.com/c`` — the slash must be
+    neither is a message that merely ends with ``.com/svg`` — the slash must be
     preceded by a boundary, which URLs never provide.
     """
 
-    match = CLEAN_MARKER_RE.search(text)
-    if match is None:
-        return text, False
-    stripped = text[: match.start()].rstrip()
-    if not stripped:
-        return text, False
-    return stripped, True
+    clean = False
+    svg = False
+    value = text
+    while True:
+        match = END_MARKER_RE.search(value)
+        if match is None:
+            break
+        stripped = value[: match.start()].rstrip()
+        if not stripped:
+            break
+        marker = match.group(1).lower()
+        if marker == "svg":
+            svg = True
+        else:
+            clean = True
+        value = stripped
+    return value, clean, svg
+
+
+def split_clean_marker(text: str) -> tuple[str, bool]:
+    """Backward-compatible wrapper returning only the clean flag."""
+
+    value, clean, _ = split_end_markers(text)
+    return value, clean
 
 
 @contextlib.asynccontextmanager
@@ -152,7 +170,9 @@ class ChatService:
             # that actually involve it, never ambient chatter in every channel.
             return
 
-        user_text, clean_mode = split_clean_marker(message.content or "")
+        user_text, clean_mode, svg_source = split_end_markers(
+            message.content or ""
+        )
         image_parts, image_note = await collect_image_parts(message)
         stored_text = "\n".join(
             part for part in (user_text, image_note) if part
@@ -223,6 +243,7 @@ class ChatService:
                 llm=self.llm,
                 provider=spec,
                 model=model_ref.model,
+                force_svg_source=svg_source,
             )
             for link in link_results:
                 tool_context.citations.append(
@@ -261,7 +282,11 @@ class ChatService:
                 else None
             )
             if forced_tool == "draw_svg":
-                attach = "true" if wants_svg_source(user_text) else "false"
+                attach = (
+                    "true"
+                    if svg_source or wants_svg_source(user_text)
+                    else "false"
+                )
                 messages[0]["content"] = (
                     f"{messages[0]['content']}\n\n"
                     "<drawing_request>Пользователь явно просит рисунок. "

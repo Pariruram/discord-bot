@@ -318,6 +318,7 @@ def build_tool(
                 f"Не удалось нарисовать: описание длиннее "
                 f"{MAX_PROMPT_CHARS} символов."
             )
+        attach_svg = bool(attach_svg or context.force_svg_source)
         if len(context.files) >= MAX_FILES_PER_TURN:
             return "Не удалось нарисовать: к ответу уже прикреплено два файла."
         needed = 2 if attach_svg else 1

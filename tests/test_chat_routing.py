@@ -5,7 +5,12 @@ from typing import Any
 
 import discord
 
-from discord_bot.discord_app.chat import ChatService, _typing, split_clean_marker
+from discord_bot.discord_app.chat import (
+    ChatService,
+    _typing,
+    split_clean_marker,
+    split_end_markers,
+)
 from discord_bot.memory.models import IngestResult
 
 
@@ -160,3 +165,37 @@ def test_clean_marker_requires_boundaries_and_content() -> None:
     # «Голый» маркер — не режим, остаёмся в обычном ответе.
     text, clean = split_clean_marker("/c")
     assert (text, clean) == ("/c", False)
+
+
+def test_svg_marker_is_stripped_and_detected() -> None:
+    assert split_end_markers("нарисуй краба /svg") == (
+        "нарисуй краба",
+        False,
+        True,
+    )
+    assert split_end_markers("нарисуй краба /SVG") == (
+        "нарисуй краба",
+        False,
+        True,
+    )
+
+
+def test_both_end_markers_work_in_any_order() -> None:
+    expected = ("нарисуй схему", True, True)
+
+    assert split_end_markers("нарисуй схему /c /svg") == expected
+    assert split_end_markers("нарисуй схему /svg /c") == expected
+
+
+def test_svg_marker_requires_boundaries_and_content() -> None:
+    assert split_end_markers("https://example.com/svg") == (
+        "https://example.com/svg",
+        False,
+        False,
+    )
+    assert split_end_markers("/svg") == ("/svg", False, False)
+    assert split_end_markers("нарисуй схему /svg.") == (
+        "нарисуй схему /svg.",
+        False,
+        False,
+    )

@@ -43,6 +43,8 @@ class ToolContext:
     llm: Any | None = None
     provider: Any | None = None
     model: str = ""
+    # ``/svg`` at the end of the user message: attach vector sources.
+    force_svg_source: bool = False
 
 
 @dataclass(frozen=True, slots=True)
