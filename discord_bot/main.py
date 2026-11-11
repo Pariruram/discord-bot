@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import time
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import discord
@@ -63,12 +65,155 @@ async def _close_login_session(bot: Any) -> None:
     http.connector = discord.utils.MISSING
 
 
+LOGIN_GATE_KEY = "login_blocked_until"
+PREVIOUS_INSTANCE_STALE_SECONDS = 75.0
+PREVIOUS_INSTANCE_POLL_SECONDS = 5.0
+
+
+def _token_fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+async def _read_login_gate(
+    settings: Any, token: str, *, now: float | None = None
+) -> float | None:
+    """Return the persisted Discord 429 deadline for this exact token."""
+
+    try:
+        raw = await settings.get(LOGIN_GATE_KEY, "")
+    except Exception:  # noqa: BLE001 - a settings failure must not block login
+        logger.warning("Не удалось прочитать login-gate", exc_info=True)
+        return None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("token") != _token_fingerprint(token):
+        # The token was reset: an old block no longer applies.
+        return None
+    try:
+        until = float(data.get("until") or 0)
+    except (TypeError, ValueError):
+        return None
+    current = time.time() if now is None else now
+    return until if until > current else None
+
+
+async def _store_login_gate(
+    settings: Any, token: str, until: float
+) -> None:
+    payload = json.dumps(
+        {"until": until, "token": _token_fingerprint(token)}
+    )
+    try:
+        await settings.set(LOGIN_GATE_KEY, payload)
+    except Exception:  # noqa: BLE001 - login backoff still works in-process
+        logger.warning("Не удалось сохранить login-gate", exc_info=True)
+
+
+async def _clear_login_gate(settings: Any, token: str) -> None:
+    try:
+        await settings.set(LOGIN_GATE_KEY, "")
+    except Exception:  # noqa: BLE001
+        logger.warning("Не удалось очистить login-gate", exc_info=True)
+
+
+async def _wait_for_login_gate(
+    settings: Any,
+    token: str,
+    health: HealthState | None = None,
+    *,
+    sleep: Any = asyncio.sleep,
+    clock: Any = time.time,
+) -> None:
+    """Honour a 429 deadline persisted by a previous process/deploy."""
+
+    until = await _read_login_gate(settings, token, now=clock())
+    if until is None:
+        return
+    wait = until - clock()
+    if wait <= 0:
+        return
+    logger.warning(
+        "Discord ещё блокирует логин; жду %s сек по сохранённому лимиту",
+        int(wait),
+    )
+    if health is not None:
+        health.set_state("waiting_login", retry_at=until)
+    await sleep(wait)
+
+
+def _heartbeat_age(updated_at: Any) -> float | None:
+    if not isinstance(updated_at, datetime):
+        return None
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - updated_at).total_seconds()
+
+
+async def _wait_for_previous_instance(
+    store: Any,
+    instance_id: str,
+    health: HealthState | None = None,
+    *,
+    sleep: Any = asyncio.sleep,
+    clock: Any = time.monotonic,
+) -> None:
+    """Wait out a deploy overlap before touching the Discord gateway.
+
+    Render starts the new instance while the old one is still connected. If a
+    fresh heartbeat from another process is visible, logging in immediately is
+    exactly what triggers a global 429. The old heartbeat goes stale once the
+    previous instance is stopped, and only then do we log in.
+    """
+
+    logged = False
+    last_warning = clock()
+    while True:
+        try:
+            heartbeat = await store.read_heartbeat()
+        except Exception:  # noqa: BLE001 - best-effort guard
+            logger.warning(
+                "Не удалось прочитать heartbeat перед логином", exc_info=True
+            )
+            return
+        if not heartbeat:
+            return
+        other = str(heartbeat.get("instance_id") or "")
+        age = _heartbeat_age(heartbeat.get("updated_at"))
+        if not other or other == instance_id or age is None:
+            return
+        if age > PREVIOUS_INSTANCE_STALE_SECONDS:
+            return
+        if not logged:
+            logger.warning(
+                "Виден свежий heartbeat предыдущего инстанса %s; "
+                "жду завершения деплоя перед логином",
+                other,
+            )
+            logged = True
+        if clock() - last_warning >= 60.0:
+            logger.warning(
+                "Предыдущий инстанс %s всё ещё пишет heartbeat; продолжаю ждать",
+                other,
+            )
+            last_warning = clock()
+        if health is not None:
+            health.set_state("waiting_previous")
+        await sleep(PREVIOUS_INSTANCE_POLL_SECONDS)
+
+
 async def _start_bot(
     bot: Any,
     token: str,
     *,
     health: HealthState | None = None,
     sleep: Any = asyncio.sleep,
+    settings: Any | None = None,
 ) -> None:
     """Retry login on a Discord global 429 without a Render crash-loop."""
 
@@ -79,6 +224,8 @@ async def _start_bot(
             health.set_state("logging_in")
         try:
             await bot.start(token)
+            if settings is not None:
+                await _clear_login_gate(settings, token)
             return
         except discord.HTTPException as exc:
             if getattr(exc, "status", None) != 429:
@@ -88,6 +235,8 @@ async def _start_bot(
             floor = floors[min(attempt - 1, len(floors) - 1)]
             wait = max(provider_wait, floor)
             await _close_login_session(bot)
+            if settings is not None:
+                await _store_login_gate(settings, token, time.time() + wait)
             logger.error(
                 "Discord 429 при логине (попытка %s); повтор через %s сек"
                 "%s",
@@ -168,6 +317,9 @@ async def run_bot(config: Config, health: HealthState | None = None) -> None:
     memory.attach_worker(worker)
     model_switcher = ModelSwitcher(settings)
 
+    await _wait_for_login_gate(settings, config.discord_token, health)
+    await _wait_for_previous_instance(memory_store, worker.instance_id, health)
+
     bot = create_bot()
     bot.health_state = health
     chat = ChatService(bot, settings, memory, llm, registry)
@@ -189,7 +341,9 @@ async def run_bot(config: Config, health: HealthState | None = None) -> None:
     await bot.add_cog(HelpCog(bot))
 
     try:
-        await _start_bot(bot, config.discord_token, health=health)
+        await _start_bot(
+            bot, config.discord_token, health=health, settings=settings
+        )
     finally:
         with contextlib.suppress(Exception):
             await bot.close()

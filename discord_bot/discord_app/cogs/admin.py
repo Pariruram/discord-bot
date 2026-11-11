@@ -167,7 +167,12 @@ class AdminCog(commands.Cog, name="admin"):
         visible = {
             key: value
             for key, value in settings.items()
-            if key != "instance_heartbeat"
+            if key
+            not in {
+                "instance_heartbeat",
+                "login_blocked_until",
+                "enabled_tools_draw_svg_migrated",
+            }
         }
         await self._send_text(
             ctx,

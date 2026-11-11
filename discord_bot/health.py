@@ -24,7 +24,10 @@ class HealthState:
 
     def __init__(self, instance_id: str = "") -> None:
         self.instance_id = instance_id
-        self.login_state = "starting"  # starting | logging_in | retrying | connected
+        self.login_state = (
+            "starting"  # starting | waiting_login | waiting_previous |
+            # logging_in | retrying | connected
+        )
         self.retry_at: float | None = None
         self.details: dict[str, Any] = {}
 
