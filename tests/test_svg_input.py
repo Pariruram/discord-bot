@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -205,6 +206,27 @@ async def test_generator_uses_the_native_pixel_prompt() -> None:
     assert "НАТИВНОГО ПИКСЕЛЬ-АРТА" in system
     assert 'viewBox="0 0 32 32"' in system
     assert "Нарисуй нативный пиксель-арт" in user_message
+
+
+async def test_generator_includes_the_selected_palette() -> None:
+    llm = FakeLLM()
+    ctx = context(
+        llm=llm,
+        source_svg="",
+        force_pixel_test2=True,
+        pixel_palette="gameboy",
+        settings={
+            "pixel_palettes": json.dumps(
+                {"gameboy": ["#0F380F", "#306230", "#8BAC0F", "#9BBC0F"]}
+            )
+        },
+    )
+
+    await generate_svg("краб", ctx)
+
+    system = llm.calls[0]["messages"][0]["content"]
+    assert "ПАЛИТРА «gameboy»" in system
+    assert "#0F380F" in system
 
 
 async def test_tool_improves_a_source_and_attaches_both_files() -> None:

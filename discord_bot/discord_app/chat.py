@@ -53,15 +53,16 @@ MAX_DISCORD_MESSAGE = 2000
 # answer while keeping the whole conversational context. ``/svg`` at the end
 # asks to attach the vector source of a drawing; ``/pixel`` asks for pixel art.
 END_MARKER_RE = re.compile(
-    r"(?:^|\s)/(clean|c|svg|pixel-test2|pixel-test|pixel\+|pixel)\s*$",
+    r"(?:^|\s)/(clean|c|svg|pixel-test2(?::(?P<palette>[a-z0-9_-]+))?"
+    r"|pixel-test|pixel\+|pixel)\s*$",
     re.IGNORECASE,
 )
 
 
 def split_end_markers(
     text: str,
-) -> tuple[str, bool, bool, bool, bool, bool, bool]:
-    """Return ``(text, clean, svg, pixel, pixel_plus, pixel_test, pixel_test2)``."""
+) -> tuple[str, bool, bool, bool, bool, bool, bool, str]:
+    """Return ``(text, clean, svg, pixel, pixel_plus, pixel_test, pixel_test2, palette)``."""
 
     clean = False
     svg = False
@@ -69,6 +70,7 @@ def split_end_markers(
     pixel_plus = False
     pixel_test = False
     pixel_test2 = False
+    palette = ""
     value = text
     while True:
         match = END_MARKER_RE.search(value)
@@ -82,22 +84,32 @@ def split_end_markers(
             svg = True
         elif marker == "pixel+":
             pixel_plus = True
+        elif marker.startswith("pixel-test2"):
+            pixel_test2 = True
+            palette = (match.group("palette") or "").lower()
         elif marker == "pixel-test":
             pixel_test = True
-        elif marker == "pixel-test2":
-            pixel_test2 = True
         elif marker == "pixel":
             pixel = True
         else:
             clean = True
         value = stripped
-    return value, clean, svg, pixel, pixel_plus, pixel_test, pixel_test2
+    return (
+        value,
+        clean,
+        svg,
+        pixel,
+        pixel_plus,
+        pixel_test,
+        pixel_test2,
+        palette,
+    )
 
 
 def split_clean_marker(text: str) -> tuple[str, bool]:
     """Backward-compatible wrapper returning only the clean flag."""
 
-    value, clean, _, _, _, _, _ = split_end_markers(text)
+    value, clean, _, _, _, _, _, _ = split_end_markers(text)
     return value, clean
 
 
@@ -196,6 +208,7 @@ class ChatService:
             pixel_plus,
             pixel_test,
             pixel_test2,
+            palette_name,
         ) = split_end_markers(message.content or "")
         image_parts, image_note = await collect_image_parts(message)
         source_svg = await collect_source_svg(message)
@@ -277,6 +290,7 @@ class ChatService:
                 force_pixel_plus=pixel_plus,
                 force_pixel_test=pixel_test,
                 force_pixel_test2=pixel_test2,
+                pixel_palette=palette_name,
             )
             for link in link_results:
                 tool_context.citations.append(

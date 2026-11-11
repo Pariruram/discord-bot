@@ -242,3 +242,13 @@ async def test_pixel_test2_marker_selects_one_to_one_mode(monkeypatch) -> None:
     await chat._handle(dm("нарисуй краба /pixel-test2"))
 
     assert registry.contexts[0].force_pixel_test2 is True
+
+
+async def test_pixel_test2_palette_reaches_the_tool_context(monkeypatch) -> None:
+    chat, _, _, registry = build(
+        monkeypatch, [response(tool_calls=[tool_call()]), response(content="Готово")]
+    )
+
+    await chat._handle(dm("нарисуй краба /pixel-test2:gameboy"))
+
+    assert registry.contexts[0].pixel_palette == "gameboy"

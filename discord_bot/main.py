@@ -28,6 +28,7 @@ from discord_bot.llm.model_switcher import ModelSwitcher
 from discord_bot.memory.repository import SupabaseMemoryRepository
 from discord_bot.memory.service import MemoryService
 from discord_bot.memory.worker import MemoryWorker
+from discord_bot.palettes import ensure_palettes
 from discord_bot.services import Services
 from discord_bot.storage.cache import SettingsCache
 from discord_bot.storage.repository import SupabaseRepository
@@ -294,6 +295,7 @@ async def run_bot(config: Config, health: HealthState | None = None) -> None:
     llm = LLMClient()
     registry = register_builtin(ToolRegistry())
     await _migrate_draw_tool(settings, registry)
+    await ensure_palettes(settings)
     if health is not None:
         try:
             values = await settings.get_all()

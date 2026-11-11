@@ -15,6 +15,7 @@ import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -32,8 +33,14 @@ from discord_bot.discord_app.pixel_art import (
     MIN_GRID,
     PixelArtError,
     pixelate,
+    upscale_nearest,
 )
 from discord_bot.llm.client import LLMError
+from discord_bot.palettes import (
+    PaletteError,
+    apply_palette,
+    palettes_from_mapping,
+)
 from discord_bot.tools.base import GeneratedFile, Tool, ToolContext
 from discord_bot.utils import safe_int
 
@@ -357,6 +364,19 @@ def _native_pixel_prompt(grid: int, colors: int) -> str:
     )
 
 
+def _palette_prompt(context: ToolContext) -> str:
+    name = str(context.pixel_palette or "").strip().lower()
+    if not name or name == "auto":
+        return ""
+    colors = palettes_from_mapping(context.settings).get(name)
+    if not colors:
+        return ""
+    return (
+        f"\n\nПАЛИТРА «{name}»: используй ТОЛЬКО эти цвета: "
+        f"{', '.join(colors)}. Не смешивай их и не добавляй другие."
+    )
+
+
 async def generate_svg(description: str, context: ToolContext) -> str:
     """Ask the SVG model for a document; never called without an LLM."""
 
@@ -375,6 +395,7 @@ async def generate_svg(description: str, context: ToolContext) -> str:
         if pixel_mode
         else SVG_MASTER_PROMPT
     )
+    system_prompt += _palette_prompt(context)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         {
@@ -447,6 +468,7 @@ def build_tool(
         prompt: str,
         attach_svg: bool = False,
         pixel_art: bool = False,
+        palette: str = "",
     ) -> str:
         description = (prompt or "").strip()
         if not description and context.source_svg:
@@ -458,6 +480,24 @@ def build_tool(
                 f"Не удалось нарисовать: описание длиннее "
                 f"{MAX_PROMPT_CHARS} символов."
             )
+        palettes = palettes_from_mapping(context.settings)
+        palette_name = (
+            palette
+            or context.pixel_palette
+            or context.settings.get("pixel_palette")
+            or "auto"
+        ).strip().lower()
+        if palette_name != "auto" and palette_name not in palettes:
+            available = ", ".join(sorted(palettes)) or "нет"
+            return (
+                f"Не удалось нарисовать: палитра {palette_name!r} не найдена. "
+                f"Доступны: {available}."
+            )
+        palette_colors = (
+            palettes.get(palette_name, ())
+            if palette_name != "auto"
+            else ()
+        )
         improving = bool(context.source_svg)
         native_pixel = bool(
             context.force_pixel_test or context.force_pixel_test2
@@ -472,6 +512,9 @@ def build_tool(
             or context.force_pixel_art
             or keep_original
             or one_to_one
+        )
+        gen_context = replace(
+            context, pixel_palette=palette_name if use_pixel else ""
         )
         grid = safe_int(
             context.settings.get("pixel_grid"),
@@ -497,7 +540,7 @@ def build_tool(
             render_width = grid * block * 6
         else:
             render_width = RENDER_WIDTH
-        needed = 1 + (1 if attach_svg else 0) + (
+        needed = (2 if one_to_one else 1) + (1 if attach_svg else 0) + (
             1 if use_pixel and keep_original else 0
         )
         if len(context.files) + needed > MAX_FILES_PER_TURN:
@@ -520,7 +563,7 @@ def build_tool(
         last_draw[context.user_id] = now
 
         try:
-            svg = await generate(description, context)
+            svg = await generate(description, gen_context)
         except SvgError as exc:
             return f"Не удалось нарисовать: {exc}."
         except LLMError as exc:
@@ -572,13 +615,48 @@ def build_tool(
                 return "Не удалось сделать пиксель-арт: внутренняя ошибка."
             if len(png) > MAX_PNG_BYTES:
                 return "Не удалось сделать пиксель-арт: PNG больше 3 МБ."
+        if use_pixel and palette_colors:
+            try:
+                png = await asyncio.wait_for(
+                    asyncio.to_thread(apply_palette, png, palette_colors),
+                    timeout=RENDER_TIMEOUT_SECONDS,
+                )
+            except PaletteError as exc:
+                return f"Не удалось применить палитру: {exc}."
+            except Exception:  # noqa: BLE001
+                logger.exception("Ошибка применения палитры")
+                return "Не удалось применить палитру: внутренняя ошибка."
         try:
             width, height = png_size(png)
         except SvgError as exc:
             return f"Не удалось нарисовать: {exc}."
 
+        png128: bytes | None = None
+        up_width = up_height = 0
+        if one_to_one:
+            try:
+                png128 = await asyncio.wait_for(
+                    asyncio.to_thread(upscale_nearest, png, 4),
+                    timeout=RENDER_TIMEOUT_SECONDS,
+                )
+                up_width, up_height = png_size(png128)
+            except TimeoutError:
+                return "Не удалось увеличить пиксель-арт: таймаут."
+            except PixelArtError as exc:
+                return f"Не удалось увеличить пиксель-арт: {exc}."
+            except Exception:  # noqa: BLE001
+                logger.exception("Ошибка nearest-апскейла")
+                return "Не удалось увеличить пиксель-арт: внутренняя ошибка."
+
         stem = f"drawing-{uuid.uuid4().hex[:8]}"
-        if use_pixel and keep_original and original_png is not None:
+        if one_to_one and png128 is not None:
+            context.files.append(
+                GeneratedFile(f"{stem}-32.png", png, mime="image/png")
+            )
+            context.files.append(
+                GeneratedFile(f"{stem}-128.png", png128, mime="image/png")
+            )
+        elif use_pixel and keep_original and original_png is not None:
             context.files.append(
                 GeneratedFile(f"{stem}.png", original_png, mime="image/png")
             )
@@ -611,28 +689,40 @@ def build_tool(
             suffix = " Исходный SVG прикреплён."
         else:
             suffix = ""
+        palette_label = (
+            f", палитра {palette_name}"
+            if palette_colors
+            else ""
+        )
         if one_to_one:
             kind = (
-                f"Нативный пиксель-арт 1:1: PNG {width}×{height} "
-                f"(1 пиксель = 1 клетка, {colors} цветов)"
+                f"Нативный пиксель-арт 1:1: {width}×{height} + "
+                f"{up_width}×{up_height} (4× nearest, "
+                f"{len(palette_colors) if palette_colors else colors} "
+                f"цветов{palette_label})"
             )
         elif native_pixel and keep_original and original_size is not None:
             kind = (
                 f"Нативный пиксель-арт: оригинал "
                 f"{original_size[0]}×{original_size[1]} + пиксель "
                 f"{width}×{height} (сетка {grid} px, блок {block} px, "
-                f"{colors} цветов)"
+                f"{len(palette_colors) if palette_colors else colors} "
+                f"цветов{palette_label})"
             )
         elif use_pixel and keep_original and original_size is not None:
             kind = (
                 f"Оригинал {original_size[0]}×{original_size[1]} + "
                 f"пиксель-арт {width}×{height} (сетка {grid} px, "
-                f"блок {block} px, {colors} цветов)"
+                f"блок {block} px, "
+                f"{len(palette_colors) if palette_colors else colors} "
+                f"цветов{palette_label})"
             )
         elif use_pixel:
             kind = (
                 f"Пиксель-арт: PNG {width}×{height}, сетка {grid} px, "
-                f"блок {block} px, {colors} цветов"
+                f"блок {block} px, "
+                f"{len(palette_colors) if palette_colors else colors} "
+                f"цветов{palette_label}"
             )
         else:
             kind = f"Готово: PNG {width}×{height}"
@@ -670,6 +760,15 @@ def build_tool(
                         "пикселизацию или ретро-стиль."
                     ),
                     "default": False,
+                },
+                "palette": {
+                    "type": "string",
+                    "description": (
+                        "Палитра пиксель-арта: auto или имя из !palette "
+                        "(например, pico8, gameboy, sweetie16, cga, mono, "
+                        "sepia)."
+                    ),
+                    "default": "auto",
                 },
             },
             "required": ["prompt"],

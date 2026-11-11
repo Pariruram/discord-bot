@@ -56,6 +56,8 @@ class ToolContext:
     force_pixel_test: bool = False
     # ``/pixel-test2``: native 32×32, one pixel per cell, no upscale.
     force_pixel_test2: bool = False
+    # Palette selected by ``/pixel-test2:name`` or the tool argument.
+    pixel_palette: str = ""
 
 
 @dataclass(frozen=True, slots=True)

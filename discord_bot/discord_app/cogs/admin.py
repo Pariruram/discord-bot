@@ -18,6 +18,14 @@ from discord_bot.llm.providers import (
     is_valid_provider_name,
     spec_from_dict,
 )
+from discord_bot.palettes import (
+    DEFAULT_PALETTES,
+    PaletteError,
+    load_palettes,
+    normalize_colors,
+    normalize_name,
+    save_palettes,
+)
 from discord_bot.prompts import DEFAULT_SYSTEM_PROMPT
 from discord_bot.tools.base import enabled_tool_names
 from discord_bot.utils import as_bool, parse_json_list, safe_int, split_message
@@ -60,6 +68,7 @@ ALLOWED_SETTINGS = {
     "pixel_grid",
     "pixel_colors",
     "pixel_block",
+    "pixel_palette",
     "search_max_results",
 }
 
@@ -180,6 +189,7 @@ class AdminCog(commands.Cog, name="admin"):
                 "instance_heartbeat",
                 "login_blocked_until",
                 "enabled_tools_draw_svg_migrated",
+                "pixel_palettes",
             }
         }
         await self._send_text(
@@ -211,6 +221,17 @@ class AdminCog(commands.Cog, name="admin"):
 
         settings = await self.services.settings.get_all()
         providers = build_providers(settings)
+
+        if key == "pixel_palette":
+            name = value.strip().lower()
+            palettes = await load_palettes(self.services.settings)
+            if name != "auto" and name not in palettes:
+                available = ", ".join(sorted(palettes)) or "нет"
+                return await ctx.send(
+                    f"Палитра `{name}` не найдена. Доступны: {available}"
+                )
+            await self.services.settings.set("pixel_palette", name)
+            return await ctx.send(f"Палитра пиксель-арта: `{name}`.")
 
         if key in MODEL_SETTING_KEYS:
             provider = self._provider_for_model_key(key, settings, providers)
@@ -514,3 +535,81 @@ class AdminCog(commands.Cog, name="admin"):
             "enabled_tools", json.dumps(enabled, ensure_ascii=False)
         )
         await ctx.send(f"Инструменты: {enabled or 'нет'}")
+
+    @commands.command(name="palette")
+    async def palette_cmd(
+        self, ctx: commands.Context, *, args: str | None = None
+    ) -> None:
+        if not await self._guard(ctx):
+            return
+
+        parts = (args or "").strip().split(maxsplit=2)
+        action = parts[0].lower() if parts else "list"
+        palettes = await load_palettes(self.services.settings)
+
+        if action in {"", "list"}:
+            if not palettes:
+                return await ctx.send("Палитр нет.")
+            lines = ["**Палитры:**"]
+            for name in sorted(palettes):
+                lines.append(f"- `{name}` — {len(palettes[name])} цветов")
+            lines.append(
+                "\n`!palette show <name>`, `!palette add <name> <#hex…>`, "
+                "`!palette remove <name>`, `!palette reset`"
+            )
+            return await self._send_text(ctx, "\n".join(lines))
+
+        if action == "reset":
+            await save_palettes(self.services.settings, DEFAULT_PALETTES)
+            return await ctx.send("Встроенные палитры восстановлены.")
+
+        if len(parts) < 2:
+            return await ctx.send(
+                "Использование: `!palette list|show|add|remove|reset`"
+            )
+
+        try:
+            name = normalize_name(parts[1])
+        except PaletteError as exc:
+            return await ctx.send(str(exc))
+
+        if action == "show":
+            colors = palettes.get(name)
+            if not colors:
+                return await ctx.send(f"Палитра `{name}` не найдена.")
+            return await ctx.send(
+                f"**{name}:** " + " ".join(f"`{color}`" for color in colors)
+            )
+
+        if action == "remove":
+            if name not in palettes:
+                return await ctx.send(f"Палитра `{name}` не найдена.")
+            palettes.pop(name)
+            await save_palettes(self.services.settings, palettes)
+            if (await self.services.settings.get("pixel_palette", "auto")) == name:
+                await self.services.settings.set("pixel_palette", "auto")
+            return await ctx.send(f"Палитра `{name}` удалена.")
+
+        if action == "add":
+            if len(parts) < 3 or not parts[2].strip():
+                return await ctx.send(
+                    "Использование: `!palette add <name> <#RRGGBB …>`"
+                )
+            colors = [
+                color
+                for color in parts[2].replace(",", " ").split()
+                if color
+            ]
+            try:
+                normalized = normalize_colors(colors)
+            except PaletteError as exc:
+                return await ctx.send(str(exc))
+            palettes[name] = normalized
+            await save_palettes(self.services.settings, palettes)
+            return await ctx.send(
+                f"Палитра `{name}` сохранена: {len(normalized)} цветов."
+            )
+
+        return await ctx.send(
+            "Использование: `!palette list|show|add|remove|reset`"
+        )

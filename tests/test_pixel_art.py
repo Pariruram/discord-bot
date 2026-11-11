@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -256,6 +257,48 @@ async def test_pixel_test2_renders_exactly_32_by_32() -> None:
     assert widths == [32]
     assert "1:1" in result
     assert "32×32" in result
-    assert len(context.files) == 1
-    assert context.files[0].filename.endswith("-pixel.png")
+    assert "128×128" in result
+    assert len(context.files) == 2
+    assert context.files[0].filename.endswith("-32.png")
+    assert context.files[1].filename.endswith("-128.png")
     assert png_size(context.files[0].data) == (32, 32)
+    assert png_size(context.files[1].data) == (128, 128)
+
+
+async def test_test2_applies_a_palette_from_settings() -> None:
+    png = sample_png(32, 32)
+    gameboy = ["#0F380F", "#306230", "#8BAC0F", "#9BBC0F"]
+
+    async def generate(description: str, ctx: ToolContext) -> str:
+        return (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+            '<rect width="32" height="32"/></svg>'
+        )
+
+    tool = build_tool(generator=generate, renderer=lambda svg, width: png)
+    context = ToolContext(
+        user_id="u1",
+        channel_id="c1",
+        settings={
+            "pixel_grid": "32",
+            "pixel_colors": "16",
+            "pixel_palette": "gameboy",
+            "pixel_palettes": json.dumps({"gameboy": gameboy}),
+        },
+        provider=SimpleNamespace(name="gemini", default_model="x"),
+        model="gemini-3.5-flash-lite",
+        force_pixel_test2=True,
+    )
+
+    await tool.handler(context, "краб")
+
+    with Image.open(io.BytesIO(context.files[0].data)) as image:
+        colors = image.convert("RGB").getcolors(maxcolors=1000)
+    assert colors is not None
+    allowed = {
+        (15, 56, 15),
+        (48, 98, 48),
+        (139, 172, 15),
+        (155, 188, 15),
+    }
+    assert {color for _, color in colors} <= allowed
