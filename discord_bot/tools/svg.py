@@ -32,7 +32,7 @@ MAX_PNG_BYTES = 3 * 1024 * 1024
 MAX_PROMPT_CHARS = 1500
 RENDER_WIDTH = 1200
 RENDER_TIMEOUT_SECONDS = 20.0
-GENERATION_MAX_TOKENS = 3072
+GENERATION_MAX_TOKENS = 2048
 GENERATION_ATTEMPTS = 2
 DEFAULT_COOLDOWN_SECONDS = 15
 MAX_FILES_PER_TURN = 2
@@ -70,7 +70,7 @@ SVG_MASTER_PROMPT = """Ты — SVG Master, профессиональный в�
 - только векторные элементы: path, rect, circle, ellipse, line, polyline,
   polygon, g, defs, linearGradient, radialGradient, clipPath, text;
 - корректный XML: закрытые теги, кавычки, без DOCTYPE и внешних сущностей;
-- компактность: не больше 200 элементов, без гигантских path-полотен.
+- компактность: не больше 120 элементов, без гигантских path-полотен.
 
 Запрещено: script, style, foreignObject, image, iframe, object, embed,
 audio, video, animation, обработчики on*, внешние ссылки, url(http…),
@@ -78,6 +78,7 @@ data: URI, @import, встроенные шрифты и внешние изоб
 
 Если просят схему, диаграмму, график или инфографику:
 - чистая сетка и иерархия, минимум декоративного шума;
+- не больше 12 блоков и 20 связей: если данных больше, упрости;
 - подписи font-family="sans-serif", размер не меньше 20 при viewBox 1024;
 - высокий контраст текста и фона, стрелки и связи читаемы;
 - не выдумывай данные: используй только то, что есть в описании.
