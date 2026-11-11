@@ -293,6 +293,12 @@ def build_tool(
             )
         if len(context.files) >= MAX_FILES_PER_TURN:
             return "Не удалось нарисовать: к ответу уже прикреплено два файла."
+        needed = 2 if attach_svg else 1
+        if len(context.files) + needed > MAX_FILES_PER_TURN:
+            return (
+                "Не удалось нарисовать: для SVG-исходника не хватает места "
+                "в лимите файлов."
+            )
 
         cooldown = safe_int(
             context.settings.get("svg_cooldown_seconds"),

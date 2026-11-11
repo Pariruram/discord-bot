@@ -212,6 +212,19 @@ async def test_tool_respects_the_file_limit() -> None:
     assert "два файла" in result
 
 
+async def test_source_svg_does_not_overflow_the_file_limit() -> None:
+    async def generate(description: str, ctx: ToolContext) -> str:
+        raise AssertionError("generator must not run")
+
+    tool = build_tool(generator=generate, renderer=lambda svg: fake_png())
+    ctx = context()
+    ctx.files.append(GeneratedFile("a.png", b"x"))
+
+    result = await tool.handler(ctx, "схема", attach_svg=True)
+
+    assert "лимите файлов" in result
+
+
 async def test_generator_retries_after_a_broken_document() -> None:
     llm = FakeLLM(["не svg", VALID_SVG])
     ctx = context(llm=llm)
