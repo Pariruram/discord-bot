@@ -65,3 +65,4 @@ class Job:
     conversation_id: str | None
     target_id: int = 0
     payload: dict | None = None
+    attempts: int = 0

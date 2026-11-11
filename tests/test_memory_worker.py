@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from discord_bot.llm.errors import ErrorKind, LLMError
 from discord_bot.memory.models import (
     ConversationState,
     Fact,
@@ -68,6 +69,20 @@ class FakeStore:
         self.requeue_calls = 0
         self.heartbeat: dict[str, Any] | None = None
         self.heartbeat_writes: list[str] = []
+        self.jobs: list[Job] = []
+        self.finished: list[int] = []
+        self.failed: list[tuple[int, str]] = []
+
+    async def claim_jobs(self, limit: int) -> list[Job]:
+        return list(self.jobs)
+
+    async def finish_job(self, job_id: int) -> bool:
+        self.finished.append(job_id)
+        return True
+
+    async def fail_job(self, job_id: int, error: str) -> bool:
+        self.failed.append((job_id, error))
+        return True
 
     async def get_conversation(self, conversation_id: str) -> ConversationState | None:
         return self.conversation
@@ -593,3 +608,84 @@ async def test_stale_heartbeat_from_another_instance_is_silent(
 
     assert confirmed is False
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def provider_error(kind: ErrorKind = ErrorKind.provider_unavailable) -> LLMError:
+    return LLMError(
+        provider="gemini",
+        model="gemini-3.5-flash-lite",
+        status_code=503,
+        kind=kind,
+        detail="high demand",
+    )
+
+
+async def test_transient_llm_error_is_retried_with_a_warning(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = FakeStore(conversation())
+    worker = MemoryWorker(store, FakeSettings(), FakeLLM(), instance_id="me")
+    store.jobs = [
+        Job(id=976, kind="session_close", conversation_id="conv-1", attempts=1)
+    ]
+
+    async def fail(job: Job) -> None:
+        raise provider_error()
+
+    monkeypatch.setattr(worker, "_process_job", fail)
+
+    with caplog.at_level(logging.WARNING, logger="discord_bot.memory.worker"):
+        processed = await worker._process_batch()
+
+    assert processed == 1
+    assert store.failed[0][0] == 976
+    assert "high demand" in store.failed[0][1]
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert any(
+        "отложена" in record.getMessage() and "попытка 1/3" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+async def test_final_transient_failure_is_logged_as_an_error_without_traceback(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = FakeStore(conversation())
+    worker = MemoryWorker(store, FakeSettings(), FakeLLM(), instance_id="me")
+    store.jobs = [
+        Job(id=976, kind="session_close", conversation_id="conv-1", attempts=3)
+    ]
+
+    async def fail(job: Job) -> None:
+        raise provider_error()
+
+    monkeypatch.setattr(worker, "_process_job", fail)
+
+    with caplog.at_level(logging.ERROR, logger="discord_bot.memory.worker"):
+        await worker._process_batch()
+
+    errors = [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert "окончательно не выполнена" in errors[0].getMessage()
+    assert errors[0].exc_info is None
+
+
+async def test_successful_job_is_finished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FakeStore(conversation())
+    worker = MemoryWorker(store, FakeSettings(), FakeLLM(), instance_id="me")
+    store.jobs = [
+        Job(id=42, kind="session_close", conversation_id="conv-1", attempts=1)
+    ]
+
+    async def ok(job: Job) -> None:
+        return None
+
+    monkeypatch.setattr(worker, "_process_job", ok)
+
+    processed = await worker._process_batch()
+
+    assert processed == 1
+    assert store.finished == [42]
+    assert store.failed == []

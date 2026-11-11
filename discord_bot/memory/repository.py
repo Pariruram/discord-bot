@@ -881,6 +881,7 @@ class SupabaseMemoryRepository:
                         conversation_id=row.get("conversation_id"),
                         target_id=int(row.get("target_id") or 0),
                         payload=row.get("payload") or {},
+                        attempts=int(row.get("attempts") or 0),
                     )
                 )
             return jobs

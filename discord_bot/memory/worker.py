@@ -15,6 +15,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from discord_bot.llm.client import LLMClient
+from discord_bot.llm.errors import ErrorKind, LLMError
 from discord_bot.llm.models import ModelRef, resolve_model_ref
 from discord_bot.llm.providers import ProviderSpec, build_providers
 from discord_bot.memory.extract import (
@@ -231,11 +232,43 @@ class MemoryWorker:
             try:
                 await self._process_job(job)
             except Exception as exc:  # noqa: BLE001 - one job must not stop the rest
-                logger.exception("Задача памяти %s не выполнена", job.id)
+                self._log_job_failure(job, exc)
                 await self._store.fail_job(job.id, str(exc))
             else:
                 await self._store.finish_job(job.id)
         return len(jobs)
+
+    def _log_job_failure(self, job: Job, exc: Exception) -> None:
+        """Transient provider errors are retried by the queue, not fatal."""
+
+        if isinstance(exc, LLMError) and exc.kind in {
+            ErrorKind.provider_unavailable,
+            ErrorKind.rate_limit,
+        }:
+            if job.attempts >= 3:
+                logger.error(
+                    "Задача памяти %s окончательно не выполнена после %s "
+                    "попыток: %s",
+                    job.id,
+                    job.attempts,
+                    exc,
+                )
+            else:
+                logger.warning(
+                    "Задача памяти %s отложена: %s, попытка %s/3, повтор "
+                    "примерно через 5 минут",
+                    job.id,
+                    exc.kind,
+                    job.attempts,
+                )
+            return
+
+        logger.error(
+            "Задача памяти %s не выполнена: %s",
+            job.id,
+            exc,
+            exc_info=exc,
+        )
 
     async def _process_job(self, job: Job) -> None:
         if not job.conversation_id:
