@@ -53,12 +53,12 @@ MAX_DISCORD_MESSAGE = 2000
 # answer while keeping the whole conversational context. ``/svg`` at the end
 # asks to attach the vector source of a drawing; ``/pixel`` asks for pixel art.
 END_MARKER_RE = re.compile(
-    r"(?:^|\s)/(clean|c|svg|pixel)\s*$", re.IGNORECASE
+    r"(?:^|\s)/(clean|c|svg|pixel\+|pixel)\s*$", re.IGNORECASE
 )
 
 
-def split_end_markers(text: str) -> tuple[str, bool, bool, bool]:
-    """Strip trailing modes; return ``(text, clean, svg, pixel)``.
+def split_end_markers(text: str) -> tuple[str, bool, bool, bool, bool]:
+    """Strip trailing modes; return ``(text, clean, svg, pixel, pixel_plus)``.
 
     A bare marker (nothing left after stripping) is not a mode switch, and
     neither is a message that merely ends with ``.com/svg`` — the slash must be
@@ -68,6 +68,7 @@ def split_end_markers(text: str) -> tuple[str, bool, bool, bool]:
     clean = False
     svg = False
     pixel = False
+    pixel_plus = False
     value = text
     while True:
         match = END_MARKER_RE.search(value)
@@ -79,18 +80,20 @@ def split_end_markers(text: str) -> tuple[str, bool, bool, bool]:
         marker = match.group(1).lower()
         if marker == "svg":
             svg = True
+        elif marker == "pixel+":
+            pixel_plus = True
         elif marker == "pixel":
             pixel = True
         else:
             clean = True
         value = stripped
-    return value, clean, svg, pixel
+    return value, clean, svg, pixel, pixel_plus
 
 
 def split_clean_marker(text: str) -> tuple[str, bool]:
     """Backward-compatible wrapper returning only the clean flag."""
 
-    value, clean, _, _ = split_end_markers(text)
+    value, clean, _, _, _ = split_end_markers(text)
     return value, clean
 
 
@@ -181,8 +184,8 @@ class ChatService:
             # that actually involve it, never ambient chatter in every channel.
             return
 
-        user_text, clean_mode, svg_source, pixel_art = split_end_markers(
-            message.content or ""
+        user_text, clean_mode, svg_source, pixel_art, pixel_plus = (
+            split_end_markers(message.content or "")
         )
         image_parts, image_note = await collect_image_parts(message)
         source_svg = await collect_source_svg(message)
@@ -261,6 +264,7 @@ class ChatService:
                 source_svg=source_svg.content,
                 source_svg_name=source_svg.filename,
                 force_pixel_art=pixel_art,
+                force_pixel_plus=pixel_plus,
             )
             for link in link_results:
                 tool_context.citations.append(
@@ -287,7 +291,9 @@ class ChatService:
                 settings.get("enabled_tools"), self.registry
             )
             has_source_svg = bool(source_svg.content)
-            pixel_requested = bool(pixel_art or wants_pixel_art(user_text))
+            pixel_requested = bool(
+                pixel_art or pixel_plus or wants_pixel_art(user_text)
+            )
             if "draw_svg" in enabled:
                 rule = (
                     "Никогда не выводи SVG/HTML-код для рисунка "
@@ -312,6 +318,7 @@ class ChatService:
                     is_svg_improvement_request(user_text, has_source_svg)
                     or is_drawing_request(user_text)
                     or pixel_art
+                    or pixel_plus
                 ):
                     forced_tool = "draw_svg"
             if forced_tool == "draw_svg":
@@ -323,11 +330,16 @@ class ChatService:
                     else "false"
                 )
                 pixel = "true" if pixel_requested else "false"
+                plus = (
+                    " Верни и оригинальный PNG, и пиксель-арт."
+                    if pixel_plus
+                    else ""
+                )
                 messages[0]["content"] = (
                     f"{messages[0]['content']}\n\n"
                     "<drawing_request>Пользователь явно просит рисунок. "
                     "Вызови draw_svg; не выводи SVG-код в чат. "
-                    f"attach_svg={attach}. pixel_art={pixel}. "
+                    f"attach_svg={attach}. pixel_art={pixel}.{plus} "
                     "Если инструмент вернул ошибку, объясни её коротко."
                     "</drawing_request>"
                 )

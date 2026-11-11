@@ -50,6 +50,8 @@ class ToolContext:
     source_svg_name: str = ""
     # ``/pixel`` at the end of the user message: convert the drawing.
     force_pixel_art: bool = False
+    # ``/pixel+``: attach both the original PNG and the pixel-art version.
+    force_pixel_plus: bool = False
 
 
 @dataclass(frozen=True, slots=True)

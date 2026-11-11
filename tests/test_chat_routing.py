@@ -173,17 +173,19 @@ def test_svg_marker_is_stripped_and_detected() -> None:
         False,
         True,
         False,
+        False,
     )
     assert split_end_markers("нарисуй краба /SVG") == (
         "нарисуй краба",
         False,
         True,
         False,
+        False,
     )
 
 
 def test_both_end_markers_work_in_any_order() -> None:
-    expected = ("нарисуй схему", True, True, False)
+    expected = ("нарисуй схему", True, True, False, False)
 
     assert split_end_markers("нарисуй схему /c /svg") == expected
     assert split_end_markers("нарисуй схему /svg /c") == expected
@@ -195,10 +197,18 @@ def test_svg_marker_requires_boundaries_and_content() -> None:
         False,
         False,
         False,
+        False,
     )
-    assert split_end_markers("/svg") == ("/svg", False, False, False)
+    assert split_end_markers("/svg") == (
+        "/svg",
+        False,
+        False,
+        False,
+        False,
+    )
     assert split_end_markers("нарисуй схему /svg.") == (
         "нарисуй схему /svg.",
+        False,
         False,
         False,
         False,
@@ -211,15 +221,42 @@ def test_pixel_marker_is_stripped_and_detected() -> None:
         False,
         False,
         True,
+        False,
     )
     assert split_end_markers("нарисуй схему /svg /pixel /c") == (
         "нарисуй схему",
         True,
         True,
         True,
+        False,
     )
     assert split_end_markers("https://example.com/pixel") == (
         "https://example.com/pixel",
+        False,
+        False,
+        False,
+        False,
+    )
+
+
+def test_pixel_plus_marker_keeps_the_original() -> None:
+    assert split_end_markers("нарисуй краба /pixel+") == (
+        "нарисуй краба",
+        False,
+        False,
+        False,
+        True,
+    )
+    assert split_end_markers("нарисуй краба /pixel+ /svg") == (
+        "нарисуй краба",
+        False,
+        True,
+        False,
+        True,
+    )
+    assert split_end_markers("https://example.com/pixel+") == (
+        "https://example.com/pixel+",
+        False,
         False,
         False,
         False,

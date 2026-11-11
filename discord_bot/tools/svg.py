@@ -48,7 +48,7 @@ RENDER_TIMEOUT_SECONDS = 20.0
 GENERATION_MAX_TOKENS = 4096
 GENERATION_ATTEMPTS = 2
 DEFAULT_COOLDOWN_SECONDS = 15
-MAX_FILES_PER_TURN = 2
+MAX_FILES_PER_TURN = 3
 
 ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
 FONT_FILES = tuple(
@@ -384,13 +384,17 @@ def build_tool(
             )
         improving = bool(context.source_svg)
         attach_svg = bool(attach_svg or context.force_svg_source or improving)
-        if len(context.files) >= MAX_FILES_PER_TURN:
-            return "Не удалось нарисовать: к ответу уже прикреплено два файла."
-        needed = 2 if attach_svg else 1
+        keep_original = bool(context.force_pixel_plus)
+        use_pixel = bool(
+            pixel_art or context.force_pixel_art or keep_original
+        )
+        needed = 1 + (1 if attach_svg else 0) + (
+            1 if use_pixel and keep_original else 0
+        )
         if len(context.files) + needed > MAX_FILES_PER_TURN:
             return (
-                "Не удалось нарисовать: для SVG-исходника не хватает места "
-                "в лимите файлов."
+                "Не удалось нарисовать: к ответу уже прикреплён максимум "
+                "файлов."
             )
 
         cooldown = safe_int(
@@ -433,7 +437,13 @@ def build_tool(
 
         if len(png) > MAX_PNG_BYTES:
             return "Не удалось нарисовать: PNG получился больше 3 МБ."
-        use_pixel = bool(pixel_art or context.force_pixel_art)
+        use_pixel = bool(
+            pixel_art or context.force_pixel_art or keep_original
+        )
+        original_png = png if (use_pixel and keep_original) else None
+        original_size = (
+            png_size(png) if original_png is not None else None
+        )
         grid = safe_int(
             context.settings.get("pixel_grid"),
             DEFAULT_GRID,
@@ -479,11 +489,23 @@ def build_tool(
             return f"Не удалось нарисовать: {exc}."
 
         stem = f"drawing-{uuid.uuid4().hex[:8]}"
-        if use_pixel:
-            stem += "-pixel"
-        context.files.append(
-            GeneratedFile(f"{stem}.png", png, mime="image/png")
-        )
+        if use_pixel and keep_original and original_png is not None:
+            context.files.append(
+                GeneratedFile(f"{stem}.png", original_png, mime="image/png")
+            )
+            context.files.append(
+                GeneratedFile(
+                    f"{stem}-pixel.png", png, mime="image/png"
+                )
+            )
+        elif use_pixel:
+            context.files.append(
+                GeneratedFile(f"{stem}-pixel.png", png, mime="image/png")
+            )
+        else:
+            context.files.append(
+                GeneratedFile(f"{stem}.png", png, mime="image/png")
+            )
         if attach_svg:
             context.files.append(
                 GeneratedFile(
@@ -500,15 +522,22 @@ def build_tool(
             suffix = " Исходный SVG прикреплён."
         else:
             suffix = ""
-        kind = (
-            f"Пиксель-арт: PNG {width}×{height}, сетка {grid} px, "
-            f"блок {block} px, {colors} цветов"
-            if use_pixel
-            else f"Готово: PNG {width}×{height}"
-        )
+        if use_pixel and keep_original and original_size is not None:
+            kind = (
+                f"Оригинал {original_size[0]}×{original_size[1]} + "
+                f"пиксель-арт {width}×{height} (сетка {grid} px, "
+                f"блок {block} px, {colors} цветов)"
+            )
+        elif use_pixel:
+            kind = (
+                f"Пиксель-арт: PNG {width}×{height}, сетка {grid} px, "
+                f"блок {block} px, {colors} цветов"
+            )
+        else:
+            kind = f"Готово: PNG {width}×{height}"
         return (
             f"{kind}, {max(1, len(png) // 1024)} КБ, "
-            f"модель {model}. Файл прикреплён к ответу.{suffix}"
+            f"модель {model}. Файлы прикреплены к ответу.{suffix}"
         )
 
     return Tool(
