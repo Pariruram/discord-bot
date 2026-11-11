@@ -48,15 +48,11 @@ class ToolContext:
     # A user-supplied SVG attachment to improve (already validated as XML).
     source_svg: str = ""
     source_svg_name: str = ""
-    # ``/pixel`` at the end of the user message: convert the drawing.
+    # ``/pixel`` at the end of the user message: native pixel art.
     force_pixel_art: bool = False
-    # ``/pixel+``: attach both the original PNG and the pixel-art version.
-    force_pixel_plus: bool = False
-    # ``/pixel-test``: native pixel-art SVG instead of post-processing.
-    force_pixel_test: bool = False
-    # ``/pixel-test2``: native 32×32, one pixel per cell, no upscale.
-    force_pixel_test2: bool = False
-    # Palette selected by ``/pixel-test2:name`` or the tool argument.
+    # Optional grid override: 16, 32, 64 or 128; 0 means use pixel_grid.
+    force_pixel_grid: int = 0
+    # Palette selected by ``/pixel:name`` or the tool argument.
     pixel_palette: str = ""
 
 

@@ -7,292 +7,145 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from discord_bot.discord_app.pixel_art import PixelArtError, pixelate
+from discord_bot.discord_app.pixel_art import PixelArtError, upscale_nearest
 from discord_bot.tools.base import ToolContext
-from discord_bot.tools.svg import build_tool, png_size, wants_pixel_art
+from discord_bot.tools.svg import build_tool, png_size
 
 
-def sample_png(width: int = 200, height: int = 100) -> bytes:
+def sample_png(width: int = 32, height: int = 32) -> bytes:
     image = Image.new("RGB", (width, height), (255, 255, 255))
-    half_w, half_h = width // 2, height // 2
-    colors = {
-        "red": (255, 0, 0),
-        "green": (0, 255, 0),
-        "blue": (0, 0, 255),
-        "yellow": (255, 255, 0),
-    }
+    colors = ((255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0))
     for x in range(width):
         for y in range(height):
-            color = (
-                colors["red"]
-                if x < half_w and y < half_h
-                else colors["green"]
-                if x >= half_w and y < half_h
-                else colors["blue"]
-                if x < half_w
-                else colors["yellow"]
+            image.putpixel(
+                (x, y),
+                colors[(x >= width // 2) + 2 * (y >= height // 2)],
             )
-            image.putpixel((x, y), color)
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
 
 
-def test_pixelate_produces_crisp_blocks_and_a_small_palette() -> None:
-    result = pixelate(sample_png(), grid=32, colors=8)
-
-    with Image.open(io.BytesIO(result)) as image:
-        assert image.size == (128, 64)
-        colors = image.convert("RGB").getcolors(maxcolors=1000)
-        assert colors is not None
-        assert len(colors) <= 8
-        top_left = image.getpixel((0, 0))
-        assert image.getpixel((10, 10)) == top_left
-        assert image.getpixel((23, 23)) == top_left
-        assert image.getpixel((63, 10)) == top_left
-        assert image.getpixel((64, 10)) != top_left
+def make_context(**overrides) -> ToolContext:
+    values = {
+        "user_id": "u1",
+        "channel_id": "c1",
+        "settings": {},
+        "provider": SimpleNamespace(name="gemini", default_model="x"),
+        "model": "gemini-3.5-flash-lite",
+        "force_pixel_art": True,
+    }
+    values.update(overrides)
+    return ToolContext(**values)
 
 
-def test_pixelate_handles_a_tall_image() -> None:
-    result = pixelate(sample_png(100, 300), grid=32, colors=16)
+class Renderer:
+    def __init__(self) -> None:
+        self.widths: list[int] = []
 
-    with Image.open(io.BytesIO(result)) as image:
-        assert image.height == 128
-        assert image.width <= 128
+    def __call__(self, svg: str, width: int = 1200) -> bytes:
+        self.widths.append(width)
+        size = width if width <= 128 else 32
+        return sample_png(size, size)
 
 
-def test_default_square_is_128_by_128() -> None:
-    result = pixelate(sample_png(100, 100))
+async def generate(description: str, ctx: ToolContext) -> str:
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+        '<rect width="32" height="32"/></svg>'
+    )
+
+
+def test_upscale_nearest_keeps_edges() -> None:
+    result = upscale_nearest(sample_png(32, 32), 4)
 
     with Image.open(io.BytesIO(result)) as image:
         assert image.size == (128, 128)
+        assert image.getpixel((0, 0)) == image.getpixel((3, 3))
+        assert image.getpixel((3, 0)) == image.getpixel((0, 0))
 
 
-def test_pixelate_rejects_non_png_data() -> None:
+def test_upscale_nearest_rejects_broken_data() -> None:
     with pytest.raises(PixelArtError):
-        pixelate(b"not a png")
+        upscale_nearest(b"\x89PNG\r\n\x1a\nbroken", 4)
 
 
-def test_pixel_intent_is_detected_in_natural_language() -> None:
-    assert wants_pixel_art("нарисуй краба в пиксель-арт") is True
-    assert wants_pixel_art("сделай pixel art") is True
-    assert wants_pixel_art("пикселизируй") is True
-    assert wants_pixel_art("нарисуй краба") is False
-
-
-def test_pixelate_rejects_broken_png() -> None:
-    with pytest.raises(PixelArtError):
-        pixelate(b"\x89PNG\r\n\x1a\nbroken")
-
-
-async def test_draw_tool_attaches_a_pixel_art_png() -> None:
-    png = sample_png()
-
-    async def generate(description: str, ctx: ToolContext) -> str:
-        return (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
-            '<rect width="10" height="10"/></svg>'
-        )
-
-    tool = build_tool(generator=generate, renderer=lambda svg, width: png)
-    context = ToolContext(
-        user_id="u1",
-        channel_id="c1",
-        settings={"pixel_grid": "32", "pixel_colors": "8"},
-        llm=SimpleNamespace(),
-        provider=SimpleNamespace(name="gemini", default_model="x"),
-        model="gemini-3.5-flash-lite",
-    )
-
-    result = await tool.handler(context, "краб", pixel_art=True)
-
-    assert "Пиксель-арт" in result
-    assert "PNG 128×64" in result
-    assert "сетка 32 px" in result
-    assert "блок 4 px" in result
-    assert len(context.files) == 1
-    assert context.files[0].filename.endswith("-pixel.png")
-    assert context.files[0].data.startswith(b"\x89PNG")
-
-
-async def test_force_pixel_art_from_the_marker_is_honoured() -> None:
-    png = sample_png()
-
-    async def generate(description: str, ctx: ToolContext) -> str:
-        return (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
-            '<rect width="10" height="10"/></svg>'
-        )
-
-    tool = build_tool(generator=generate, renderer=lambda svg, width: png)
-    context = ToolContext(
-        user_id="u1",
-        channel_id="c1",
-        settings={"pixel_grid": "32", "pixel_colors": "8"},
-        provider=SimpleNamespace(name="gemini", default_model="x"),
-        model="gemini-3.5-flash-lite",
-        force_pixel_art=True,
-    )
-
-    result = await tool.handler(context, "краб", pixel_art=False)
-
-    assert "Пиксель-арт" in result
-    assert "блок 4 px" in result
-    assert len(context.files) == 1
-    assert context.files[0].filename.endswith("-pixel.png")
-
-
-async def test_pixel_plus_attaches_original_and_pixel() -> None:
-    png = sample_png()
-
-    async def generate(description: str, ctx: ToolContext) -> str:
-        return (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
-            '<rect width="10" height="10"/></svg>'
-        )
-
-    tool = build_tool(generator=generate, renderer=lambda svg, width: png)
-    context = ToolContext(
-        user_id="u1",
-        channel_id="c1",
-        settings={"pixel_grid": "32", "pixel_colors": "8"},
-        provider=SimpleNamespace(name="gemini", default_model="x"),
-        model="gemini-3.5-flash-lite",
-        force_pixel_plus=True,
-    )
-
-    result = await tool.handler(context, "краб", pixel_art=False)
-
-    assert "Оригинал 200×100 + пиксель-арт 128×64" in result
-    assert len(context.files) == 2
-    assert context.files[0].filename.endswith(".png")
-    assert not context.files[0].filename.endswith("-pixel.png")
-    assert context.files[1].filename.endswith("-pixel.png")
-
-
-async def test_pixel_plus_with_source_svg_attaches_three_files() -> None:
-    png = sample_png()
-
-    async def generate(description: str, ctx: ToolContext) -> str:
-        return (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-            '<rect width="32" height="32"/></svg>'
-        )
-
-    tool = build_tool(generator=generate, renderer=lambda svg, width: png)
-    context = ToolContext(
-        user_id="u1",
-        channel_id="c1",
-        settings={"pixel_grid": "32", "pixel_colors": "8"},
-        provider=SimpleNamespace(name="gemini", default_model="x"),
-        model="gemini-3.5-flash-lite",
-        force_pixel_plus=True,
-    )
-
-    result = await tool.handler(context, "краб", attach_svg=True)
-
-    assert "Исходный SVG прикреплён" in result
-    assert len(context.files) == 3
-    assert context.files[2].filename.endswith(".svg")
-
-
-async def test_native_pixel_mode_renders_at_a_grid_multiple() -> None:
-    png = sample_png()
-    widths: list[int] = []
-
-    async def generate(description: str, ctx: ToolContext) -> str:
-        return (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-            '<rect width="32" height="32"/></svg>'
-        )
-
-    def render(svg: str, width: int = 1200) -> bytes:
-        widths.append(width)
-        return png
-
-    tool = build_tool(generator=generate, renderer=render)
-    context = ToolContext(
-        user_id="u1",
-        channel_id="c1",
-        settings={"pixel_grid": "32", "pixel_colors": "8"},
-        provider=SimpleNamespace(name="gemini", default_model="x"),
-        model="gemini-3.5-flash-lite",
-        force_pixel_test=True,
-    )
+async def test_pixel_defaults_to_32_and_publishes_128_first() -> None:
+    renderer = Renderer()
+    tool = build_tool(generator=generate, renderer=renderer)
+    context = make_context()
 
     result = await tool.handler(context, "краб")
 
-    assert widths == [768]
-    assert "Нативный пиксель-арт" in result
+    assert renderer.widths == [32]
+    assert "128×128 + 32×32" in result
     assert len(context.files) == 2
-    assert context.files[1].filename.endswith("-pixel.png")
+    assert context.files[0].filename.endswith("-128.png")
+    assert context.files[1].filename.endswith("-32.png")
+    assert png_size(context.files[0].data) == (128, 128)
+    assert png_size(context.files[1].data) == (32, 32)
 
 
-async def test_pixel_test2_renders_exactly_32_by_32() -> None:
-    png = sample_png(32, 32)
-    widths: list[int] = []
+async def test_pixel_grid_from_settings_and_marker() -> None:
+    renderer = Renderer()
+    tool = build_tool(generator=generate, renderer=renderer)
 
-    async def generate(description: str, ctx: ToolContext) -> str:
-        return (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-            '<rect width="32" height="32"/></svg>'
-        )
-
-    def render(svg: str, width: int = 1200) -> bytes:
-        widths.append(width)
-        return png
-
-    tool = build_tool(generator=generate, renderer=render)
-    context = ToolContext(
-        user_id="u1",
-        channel_id="c1",
-        settings={"pixel_grid": "32", "pixel_colors": "8"},
-        provider=SimpleNamespace(name="gemini", default_model="x"),
-        model="gemini-3.5-flash-lite",
-        force_pixel_test2=True,
+    first = make_context(
+        settings={"pixel_grid": "64", "svg_cooldown_seconds": "0"}
     )
+    second = make_context(
+        settings={"svg_cooldown_seconds": "0"}, force_pixel_grid=16
+    )
+
+    await tool.handler(first, "краб")
+    await tool.handler(second, "краб")
+
+    assert renderer.widths == [64, 16]
+    assert png_size(first.files[0].data) == (128, 128)
+    assert png_size(first.files[1].data) == (64, 64)
+    assert png_size(second.files[1].data) == (16, 16)
+
+
+async def test_pixel_64_returns_128_and_64() -> None:
+    renderer = Renderer()
+    tool = build_tool(generator=generate, renderer=renderer)
+    context = make_context(force_pixel_grid=64)
 
     result = await tool.handler(context, "краб")
 
-    assert widths == [32]
-    assert "1:1" in result
-    assert "32×32" in result
-    assert "128×128" in result
-    assert len(context.files) == 2
-    assert context.files[0].filename.endswith("-32.png")
-    assert context.files[1].filename.endswith("-128.png")
-    assert png_size(context.files[0].data) == (32, 32)
-    assert png_size(context.files[1].data) == (128, 128)
+    assert renderer.widths == [64]
+    assert "128×128 + 64×64" in result
+    assert png_size(context.files[0].data) == (128, 128)
+    assert png_size(context.files[1].data) == (64, 64)
 
 
-async def test_test2_applies_a_palette_from_settings() -> None:
-    png = sample_png(32, 32)
+async def test_invalid_grid_is_rejected_without_render() -> None:
+    renderer = Renderer()
+    tool = build_tool(generator=generate, renderer=renderer)
+    context = make_context(force_pixel_grid=48)
+
+    result = await tool.handler(context, "краб")
+
+    assert "16, 32, 64 или 128" in result
+    assert renderer.widths == []
+    assert context.files == []
+
+
+async def test_palette_is_applied_before_the_upscale() -> None:
     gameboy = ["#0F380F", "#306230", "#8BAC0F", "#9BBC0F"]
-
-    async def generate(description: str, ctx: ToolContext) -> str:
-        return (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-            '<rect width="32" height="32"/></svg>'
-        )
-
-    tool = build_tool(generator=generate, renderer=lambda svg, width: png)
-    context = ToolContext(
-        user_id="u1",
-        channel_id="c1",
+    renderer = Renderer()
+    tool = build_tool(generator=generate, renderer=renderer)
+    context = make_context(
         settings={
-            "pixel_grid": "32",
-            "pixel_colors": "16",
             "pixel_palette": "gameboy",
             "pixel_palettes": json.dumps({"gameboy": gameboy}),
-        },
-        provider=SimpleNamespace(name="gemini", default_model="x"),
-        model="gemini-3.5-flash-lite",
-        force_pixel_test2=True,
+        }
     )
 
-    await tool.handler(context, "краб")
+    result = await tool.handler(context, "краб")
 
-    with Image.open(io.BytesIO(context.files[0].data)) as image:
+    assert "палитра gameboy" in result
+    with Image.open(io.BytesIO(context.files[1].data)) as image:
         colors = image.convert("RGB").getcolors(maxcolors=1000)
     assert colors is not None
     allowed = {
@@ -302,3 +155,28 @@ async def test_test2_applies_a_palette_from_settings() -> None:
         (155, 188, 15),
     }
     assert {color for _, color in colors} <= allowed
+
+
+async def test_normal_drawing_still_returns_one_png() -> None:
+    renderer = Renderer()
+    tool = build_tool(generator=generate, renderer=renderer)
+    context = make_context(force_pixel_art=False)
+
+    result = await tool.handler(context, "краб")
+
+    assert renderer.widths == [1200]
+    assert "Готово" in result
+    assert len(context.files) == 1
+    assert context.files[0].filename.endswith(".png")
+
+
+async def test_pixel_with_svg_returns_three_files() -> None:
+    renderer = Renderer()
+    tool = build_tool(generator=generate, renderer=renderer)
+    context = make_context()
+
+    result = await tool.handler(context, "краб", attach_svg=True)
+
+    assert "Исходный SVG прикреплён" in result
+    assert len(context.files) == 3
+    assert context.files[2].filename.endswith(".svg")

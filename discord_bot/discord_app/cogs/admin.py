@@ -67,7 +67,6 @@ ALLOWED_SETTINGS = {
     "svg_cooldown_seconds",
     "pixel_grid",
     "pixel_colors",
-    "pixel_block",
     "pixel_palette",
     "search_max_results",
 }
@@ -100,9 +99,10 @@ NUMERIC_SETTINGS = {
     "svg_cooldown_seconds": (0, 600),
     "pixel_grid": (16, 128),
     "pixel_colors": (8, 32),
-    "pixel_block": (2, 24),
     "search_max_results": (1, 10),
 }
+
+PIXEL_GRIDS = {"16", "32", "64", "128"}
 
 
 class AdminCog(commands.Cog, name="admin"):
@@ -232,6 +232,15 @@ class AdminCog(commands.Cog, name="admin"):
                 )
             await self.services.settings.set("pixel_palette", name)
             return await ctx.send(f"Палитра пиксель-арта: `{name}`.")
+
+        if key == "pixel_grid":
+            grid = value.strip()
+            if grid not in PIXEL_GRIDS:
+                return await ctx.send(
+                    "`pixel_grid` должен быть 16, 32, 64 или 128."
+                )
+            await self.services.settings.set("pixel_grid", grid)
+            return await ctx.send(f"Сетка пиксель-арта: `{grid}`.")
 
         if key in MODEL_SETTING_KEYS:
             provider = self._provider_for_model_key(key, settings, providers)

@@ -53,23 +53,19 @@ MAX_DISCORD_MESSAGE = 2000
 # answer while keeping the whole conversational context. ``/svg`` at the end
 # asks to attach the vector source of a drawing; ``/pixel`` asks for pixel art.
 END_MARKER_RE = re.compile(
-    r"(?:^|\s)/(clean|c|svg|pixel-test2(?::(?P<palette>[a-z0-9_-]+))?"
-    r"|pixel-test|pixel\+|pixel)\s*$",
+    r"(?:^|\s)/(clean|c|svg|pixel(?:\s+(?P<grid>\d{1,3}))?"
+    r"(?::(?P<palette>[a-z0-9_-]+))?)\s*$",
     re.IGNORECASE,
 )
 
 
-def split_end_markers(
-    text: str,
-) -> tuple[str, bool, bool, bool, bool, bool, bool, str]:
-    """Return ``(text, clean, svg, pixel, pixel_plus, pixel_test, pixel_test2, palette)``."""
+def split_end_markers(text: str) -> tuple[str, bool, bool, bool, int, str]:
+    """Return ``(text, clean, svg, pixel, grid, palette)``."""
 
     clean = False
     svg = False
     pixel = False
-    pixel_plus = False
-    pixel_test = False
-    pixel_test2 = False
+    grid = 0
     palette = ""
     value = text
     while True:
@@ -82,34 +78,21 @@ def split_end_markers(
         marker = match.group(1).lower()
         if marker == "svg":
             svg = True
-        elif marker == "pixel+":
-            pixel_plus = True
-        elif marker.startswith("pixel-test2"):
-            pixel_test2 = True
-            palette = (match.group("palette") or "").lower()
-        elif marker == "pixel-test":
-            pixel_test = True
-        elif marker == "pixel":
+        elif marker.startswith("pixel"):
             pixel = True
+            if match.group("grid"):
+                grid = int(match.group("grid"))
+            palette = (match.group("palette") or "").lower()
         else:
             clean = True
         value = stripped
-    return (
-        value,
-        clean,
-        svg,
-        pixel,
-        pixel_plus,
-        pixel_test,
-        pixel_test2,
-        palette,
-    )
+    return value, clean, svg, pixel, grid, palette
 
 
 def split_clean_marker(text: str) -> tuple[str, bool]:
     """Backward-compatible wrapper returning only the clean flag."""
 
-    value, clean, _, _, _, _, _, _ = split_end_markers(text)
+    value, clean, _, _, _, _ = split_end_markers(text)
     return value, clean
 
 
@@ -205,9 +188,7 @@ class ChatService:
             clean_mode,
             svg_source,
             pixel_art,
-            pixel_plus,
-            pixel_test,
-            pixel_test2,
+            pixel_grid,
             palette_name,
         ) = split_end_markers(message.content or "")
         image_parts, image_note = await collect_image_parts(message)
@@ -287,9 +268,7 @@ class ChatService:
                 source_svg=source_svg.content,
                 source_svg_name=source_svg.filename,
                 force_pixel_art=pixel_art,
-                force_pixel_plus=pixel_plus,
-                force_pixel_test=pixel_test,
-                force_pixel_test2=pixel_test2,
+                force_pixel_grid=pixel_grid,
                 pixel_palette=palette_name,
             )
             for link in link_results:
@@ -318,11 +297,7 @@ class ChatService:
             )
             has_source_svg = bool(source_svg.content)
             pixel_requested = bool(
-                pixel_art
-                or pixel_plus
-                or pixel_test
-                or pixel_test2
-                or wants_pixel_art(user_text)
+                pixel_art or wants_pixel_art(user_text)
             )
             if "draw_svg" in enabled:
                 rule = (
@@ -348,9 +323,6 @@ class ChatService:
                     is_svg_improvement_request(user_text, has_source_svg)
                     or is_drawing_request(user_text)
                     or pixel_art
-                    or pixel_plus
-                    or pixel_test
-                    or pixel_test2
                 ):
                     forced_tool = "draw_svg"
             if forced_tool == "draw_svg":
@@ -362,16 +334,18 @@ class ChatService:
                     else "false"
                 )
                 pixel = "true" if pixel_requested else "false"
-                plus = (
-                    " Верни и оригинальный PNG, и пиксель-арт."
-                    if pixel_plus or pixel_test
-                    else ""
+                grid_hint = (
+                    f" pixel_grid={pixel_grid}." if pixel_grid else ""
+                )
+                palette_hint = (
+                    f" palette={palette_name}." if palette_name else ""
                 )
                 messages[0]["content"] = (
                     f"{messages[0]['content']}\n\n"
                     "<drawing_request>Пользователь явно просит рисунок. "
                     "Вызови draw_svg; не выводи SVG-код в чат. "
-                    f"attach_svg={attach}. pixel_art={pixel}.{plus} "
+                    f"attach_svg={attach}. pixel_art={pixel}."
+                    f"{grid_hint}{palette_hint} "
                     "Если инструмент вернул ошибку, объясни её коротко."
                     "</drawing_request>"
                 )

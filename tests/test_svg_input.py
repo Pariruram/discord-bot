@@ -196,7 +196,8 @@ async def test_generator_uses_the_native_pixel_prompt() -> None:
     ctx = context(
         llm=llm,
         source_svg="",
-        force_pixel_test=True,
+        force_pixel_art=True,
+        force_pixel_grid=32,
     )
 
     await generate_svg("краб", ctx)
@@ -213,7 +214,8 @@ async def test_generator_includes_the_selected_palette() -> None:
     ctx = context(
         llm=llm,
         source_svg="",
-        force_pixel_test2=True,
+        force_pixel_art=True,
+        force_pixel_grid=32,
         pixel_palette="gameboy",
         settings={
             "pixel_palettes": json.dumps(

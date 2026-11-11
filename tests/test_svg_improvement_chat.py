@@ -210,45 +210,17 @@ async def test_pixel_marker_reaches_the_tool_context(monkeypatch) -> None:
     assert registry.contexts[0].force_pixel_art is True
 
 
-async def test_pixel_plus_marker_keeps_the_original(monkeypatch) -> None:
+async def test_pixel_grid_and_palette_reach_the_tool_context(monkeypatch) -> None:
     chat, _, llm, registry = build(
         monkeypatch, [response(tool_calls=[tool_call()]), response(content="Готово")]
     )
 
-    await chat._handle(dm("нарисуй краба /pixel+"))
+    await chat._handle(dm("нарисуй краба /pixel 64:gameboy"))
 
     assert llm.messages is not None
-    assert "оригинальный PNG" in llm.messages[0]["content"]
-    assert registry.contexts[0].force_pixel_plus is True
-
-
-async def test_pixel_test_marker_selects_native_mode(monkeypatch) -> None:
-    chat, _, llm, registry = build(
-        monkeypatch, [response(tool_calls=[tool_call()]), response(content="Готово")]
-    )
-
-    await chat._handle(dm("нарисуй краба /pixel-test"))
-
-    assert llm.messages is not None
-    assert "оригинальный PNG" in llm.messages[0]["content"]
-    assert registry.contexts[0].force_pixel_test is True
-
-
-async def test_pixel_test2_marker_selects_one_to_one_mode(monkeypatch) -> None:
-    chat, _, _, registry = build(
-        monkeypatch, [response(tool_calls=[tool_call()]), response(content="Готово")]
-    )
-
-    await chat._handle(dm("нарисуй краба /pixel-test2"))
-
-    assert registry.contexts[0].force_pixel_test2 is True
-
-
-async def test_pixel_test2_palette_reaches_the_tool_context(monkeypatch) -> None:
-    chat, _, _, registry = build(
-        monkeypatch, [response(tool_calls=[tool_call()]), response(content="Готово")]
-    )
-
-    await chat._handle(dm("нарисуй краба /pixel-test2:gameboy"))
-
-    assert registry.contexts[0].pixel_palette == "gameboy"
+    assert "pixel_grid=64" in llm.messages[0]["content"]
+    assert "palette=gameboy" in llm.messages[0]["content"]
+    context = registry.contexts[0]
+    assert context.force_pixel_art is True
+    assert context.force_pixel_grid == 64
+    assert context.pixel_palette == "gameboy"

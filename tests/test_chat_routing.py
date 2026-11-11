@@ -14,13 +14,6 @@ from discord_bot.discord_app.chat import (
 from discord_bot.memory.models import IngestResult
 
 
-def plain_markers(text: str) -> tuple:
-    *values, palette = split_end_markers(text)
-    assert palette == ""
-    return tuple(values)
-
-
-
 class FakeSettings:
     def __init__(self, data: dict[str, str] | None = None) -> None:
         self.data = dict(data or {})
@@ -175,201 +168,121 @@ def test_clean_marker_requires_boundaries_and_content() -> None:
 
 
 def test_svg_marker_is_stripped_and_detected() -> None:
-    assert plain_markers("нарисуй краба /svg") == (
+    assert split_end_markers("нарисуй краба /svg") == (
         "нарисуй краба",
         False,
         True,
         False,
-        False,
-        False,
-        False,
+        0,
+        "",
     )
-    assert plain_markers("нарисуй краба /SVG") == (
+    assert split_end_markers("нарисуй краба /SVG") == (
         "нарисуй краба",
         False,
         True,
         False,
-        False,
-        False,
-        False,
+        0,
+        "",
     )
 
 
 def test_both_end_markers_work_in_any_order() -> None:
-    expected = ("нарисуй схему", True, True, False, False, False, False)
+    expected = ("нарисуй схему", True, True, False, 0, "")
 
-    assert plain_markers("нарисуй схему /c /svg") == expected
-    assert plain_markers("нарисуй схему /svg /c") == expected
+    assert split_end_markers("нарисуй схему /c /svg") == expected
+    assert split_end_markers("нарисуй схему /svg /c") == expected
 
 
 def test_svg_marker_requires_boundaries_and_content() -> None:
-    assert plain_markers("https://example.com/svg") == (
+    assert split_end_markers("https://example.com/svg") == (
         "https://example.com/svg",
         False,
         False,
         False,
-        False,
-        False,
-        False,
+        0,
+        "",
     )
-    assert plain_markers("/svg") == (
+    assert split_end_markers("/svg") == (
         "/svg",
         False,
         False,
         False,
-        False,
-        False,
-        False,
+        0,
+        "",
     )
-    assert plain_markers("нарисуй схему /svg.") == (
+    assert split_end_markers("нарисуй схему /svg.") == (
         "нарисуй схему /svg.",
         False,
         False,
         False,
-        False,
-        False,
-        False,
+        0,
+        "",
     )
 
 
 def test_pixel_marker_is_stripped_and_detected() -> None:
-    assert plain_markers("нарисуй краба /pixel") == (
+    assert split_end_markers("нарисуй краба /pixel") == (
         "нарисуй краба",
         False,
         False,
         True,
-        False,
-        False,
-        False,
+        0,
+        "",
     )
-    assert plain_markers("нарисуй схему /svg /pixel /c") == (
+    assert split_end_markers("нарисуй схему /svg /pixel /c") == (
         "нарисуй схему",
         True,
         True,
         True,
-        False,
-        False,
-        False,
+        0,
+        "",
     )
-    assert plain_markers("https://example.com/pixel") == (
+    assert split_end_markers("https://example.com/pixel") == (
         "https://example.com/pixel",
         False,
         False,
         False,
-        False,
-        False,
-        False,
+        0,
+        "",
     )
 
 
-def test_pixel_plus_marker_keeps_the_original() -> None:
-    assert plain_markers("нарисуй краба /pixel+") == (
+def test_pixel_grid_and_palette_are_parsed() -> None:
+    assert split_end_markers("нарисуй краба /pixel 64") == (
         "нарисуй краба",
         False,
         False,
-        False,
         True,
-        False,
-        False,
+        64,
+        "",
     )
-    assert plain_markers("нарисуй краба /pixel+ /svg") == (
-        "нарисуй краба",
-        False,
-        True,
-        False,
-        True,
-        False,
-        False,
-    )
-    assert plain_markers("https://example.com/pixel+") == (
-        "https://example.com/pixel+",
-        False,
-        False,
-        False,
-        False,
-        False,
-        False,
-    )
-
-
-def test_pixel_test_marker_selects_the_native_mode() -> None:
-    assert plain_markers("нарисуй краба /pixel-test") == (
+    assert split_end_markers("нарисуй краба /pixel:gameboy") == (
         "нарисуй краба",
         False,
         False,
-        False,
-        False,
         True,
-        False,
-    )
-    assert plain_markers("нарисуй краба /pixel-test /svg /c") == (
-        "нарисуй краба",
-        True,
-        True,
-        False,
-        False,
-        True,
-        False,
-    )
-    assert plain_markers("https://example.com/pixel-test") == (
-        "https://example.com/pixel-test",
-        False,
-        False,
-        False,
-        False,
-        False,
-        False,
-    )
-
-
-def test_pixel_test2_marker_selects_the_one_to_one_mode() -> None:
-    assert plain_markers("нарисуй краба /pixel-test2") == (
-        "нарисуй краба",
-        False,
-        False,
-        False,
-        False,
-        False,
-        True,
-    )
-    assert plain_markers("нарисуй краба /pixel-test2 /svg /c") == (
-        "нарисуй краба",
-        True,
-        True,
-        False,
-        False,
-        False,
-        True,
-    )
-    assert plain_markers("https://example.com/pixel-test2") == (
-        "https://example.com/pixel-test2",
-        False,
-        False,
-        False,
-        False,
-        False,
-        False,
-    )
-
-
-def test_pixel_test2_palette_suffix_is_parsed() -> None:
-    assert split_end_markers("нарисуй краба /pixel-test2:gameboy") == (
-        "нарисуй краба",
-        False,
-        False,
-        False,
-        False,
-        False,
-        True,
+        0,
         "gameboy",
     )
-    assert split_end_markers("нарисуй краба /pixel-test2:pico8 /svg") == (
+    assert split_end_markers("нарисуй краба /pixel 64:gameboy /svg") == (
         "нарисуй краба",
         False,
         True,
-        False,
-        False,
-        False,
         True,
-        "pico8",
+        64,
+        "gameboy",
     )
+    assert split_end_markers("https://example.com/pixel 64") == (
+        "https://example.com/pixel 64",
+        False,
+        False,
+        False,
+        0,
+        "",
+    )
+
+
+def test_old_pixel_markers_are_gone() -> None:
+    for marker in ("/pixel+", "/pixel-test", "/pixel-test2"):
+        text = f"нарисуй краба {marker}"
+        assert split_end_markers(text) == (text, False, False, False, 0, "")
