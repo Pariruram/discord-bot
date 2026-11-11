@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from discord_bot.citations import Citation
+from discord_bot.llm.errors import ErrorKind, LLMError
 from discord_bot.llm.models import ModelRef
 from discord_bot.llm.providers import ProviderSpec
 from discord_bot.llm.tool_loop import run_tool_loop
@@ -119,6 +120,82 @@ async def test_final_call_without_tools_after_round_limit() -> None:
 
     assert result == "final"
     assert llm.calls[-1]["tools"] is None
+
+
+async def test_forced_tool_is_requested_on_the_first_round() -> None:
+    llm = FakeLLM(
+        [
+            response(tool_calls=[tool_call("call-1", "double", '{"value": 3}')]),
+            response(content="done"),
+        ]
+    )
+
+    result = await run_tool_loop(
+        llm,
+        SPEC,
+        MODEL_REF,
+        [],
+        make_registry(),
+        ["double"],
+        CONTEXT,
+        forced_tool="double",
+    )
+
+    assert result == "done"
+    assert llm.calls[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "double"},
+    }
+    assert llm.calls[1]["tool_choice"] == "auto"
+
+
+async def test_forced_tool_is_ignored_when_no_schemas_are_enabled() -> None:
+    llm = FakeLLM([response(content="plain")])
+
+    result = await run_tool_loop(
+        llm,
+        SPEC,
+        MODEL_REF,
+        [],
+        make_registry(),
+        [],
+        CONTEXT,
+        forced_tool="double",
+    )
+
+    assert result == "plain"
+    assert llm.calls[0]["tool_choice"] == "auto"
+
+
+async def test_forced_tool_falls_back_to_auto_on_bad_request() -> None:
+    class RejectingLLM(FakeLLM):
+        async def complete(self, spec, model, messages, **kwargs):
+            if kwargs.get("tool_choice") != "auto":
+                self.calls.append({"messages": messages, **kwargs})
+                raise LLMError(
+                    provider="groq",
+                    model="model",
+                    status_code=400,
+                    kind=ErrorKind.bad_request,
+                    detail="tool_choice is not supported",
+                )
+            return await super().complete(spec, model, messages, **kwargs)
+
+    llm = RejectingLLM([response(content="fallback")])
+
+    result = await run_tool_loop(
+        llm,
+        SPEC,
+        MODEL_REF,
+        [],
+        make_registry(),
+        ["double"],
+        CONTEXT,
+        forced_tool="double",
+    )
+
+    assert result == "fallback"
+    assert llm.calls[-1]["tool_choice"] == "auto"
 
 
 async def test_tool_context_collects_citations() -> None:

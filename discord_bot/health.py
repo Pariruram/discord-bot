@@ -20,16 +20,20 @@ logger = logging.getLogger(__name__)
 class HealthState:
     """Mutable login state shared between the bot and the health thread."""
 
-    __slots__ = ("instance_id", "login_state", "retry_at")
+    __slots__ = ("instance_id", "login_state", "retry_at", "details")
 
     def __init__(self, instance_id: str = "") -> None:
         self.instance_id = instance_id
         self.login_state = "starting"  # starting | logging_in | retrying | connected
         self.retry_at: float | None = None
+        self.details: dict[str, Any] = {}
 
     def set_state(self, state: str, retry_at: float | None = None) -> None:
         self.login_state = state
         self.retry_at = retry_at
+
+    def set_details(self, **details: Any) -> None:
+        self.details.update(details)
 
     def snapshot(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -38,6 +42,8 @@ class HealthState:
         }
         if self.retry_at is not None:
             payload["retry_in_sec"] = max(0, int(self.retry_at - time.time()))
+        if self.details:
+            payload["details"] = dict(self.details)
         return payload
 
 

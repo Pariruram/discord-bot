@@ -15,8 +15,10 @@ from discord_bot.tools.svg import (
     build_tool,
     extract_svg,
     generate_svg,
+    is_drawing_request,
     png_size,
     validate_svg,
+    wants_svg_source,
 )
 
 VALID_SVG = (
@@ -92,6 +94,35 @@ def test_valid_svg_passes() -> None:
     validate_svg(VALID_SVG)
 
 
+def test_drawing_intent_is_detected_for_explicit_requests() -> None:
+    for text in (
+        "нарисуй краба",
+        "нарисуйте схему RAG",
+        "покажи схему, как работает RAG",
+        "сделай график по данным",
+        "построй диаграмму",
+        "пришли svg с иконкой",
+        "draw a diagram",
+    ):
+        assert is_drawing_request(text) is True, text
+
+
+def test_drawing_intent_does_not_fire_on_plain_questions() -> None:
+    for text in (
+        "объясни, как работает схема RAG",
+        "что такое векторная база?",
+        "как дела?",
+        "расскажи про графики в Python",
+    ):
+        assert is_drawing_request(text) is False, text
+
+
+def test_svg_source_request_is_detected() -> None:
+    assert wants_svg_source("и пришли svg") is True
+    assert wants_svg_source("нужен векторный исходник") is True
+    assert wants_svg_source("просто нарисуй") is False
+
+
 @pytest.mark.parametrize(
     "svg",
     [
@@ -137,7 +168,7 @@ async def test_tool_renders_and_attaches_a_png() -> None:
     result = await tool.handler(ctx, "схема RAG")
 
     assert "PNG 400×200" in result
-    assert "gemini-3.8-flash" in result
+    assert "gemini-3.5-flash-lite" in result
     assert len(ctx.files) == 1
     assert ctx.files[0].filename.endswith(".png")
     assert ctx.files[0].mime == "image/png"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from discord_bot.llm.errors import ErrorKind, LLMError
 from discord_bot.llm.models import ModelRef
 from discord_bot.llm.providers import ProviderSpec
 from discord_bot.tools.base import ToolContext, ToolRegistry
@@ -42,6 +43,7 @@ async def run_tool_loop(
     temperature: float = 0.75,
     max_tokens: int = 1200,
     fallback: str = "Извини, не удалось сформировать ответ.",
+    forced_tool: str | None = None,
 ) -> str:
     """Run the model, execute requested tools and feed results back.
 
@@ -51,15 +53,43 @@ async def run_tool_loop(
 
     tool_schemas = registry.schemas(enabled_tools) or None
 
-    for _ in range(max(1, max_rounds)):
-        response = await llm.complete(
-            spec,
-            model_ref.model,
-            messages,
-            tools=tool_schemas,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+    for round_index in range(max(1, max_rounds)):
+        choice: str | dict[str, Any] = "auto"
+        if round_index == 0 and forced_tool and tool_schemas:
+            choice = {
+                "type": "function",
+                "function": {"name": forced_tool},
+            }
+        response = None
+        try:
+            response = await llm.complete(
+                spec,
+                model_ref.model,
+                messages,
+                tools=tool_schemas,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tool_choice=choice,
+            )
+        except LLMError as exc:
+            if choice != "auto" and exc.kind is ErrorKind.bad_request:
+                # Some providers reject a named tool_choice; let the model pick.
+                logger.warning(
+                    "Провайдер отклонил принудительный tool_choice, повторяю "
+                    "в режиме auto: %s",
+                    exc,
+                )
+                response = await llm.complete(
+                    spec,
+                    model_ref.model,
+                    messages,
+                    tools=tool_schemas,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tool_choice="auto",
+                )
+            else:
+                raise
         message = response.choices[0].message
         tool_calls = getattr(message, "tool_calls", None) or []
 

@@ -20,6 +20,7 @@ from typing import Any
 
 from defusedxml import ElementTree as ET
 
+from discord_bot.llm.client import LLMError
 from discord_bot.tools.base import GeneratedFile, Tool, ToolContext
 from discord_bot.utils import safe_int
 
@@ -31,7 +32,7 @@ MAX_PNG_BYTES = 3 * 1024 * 1024
 MAX_PROMPT_CHARS = 1500
 RENDER_WIDTH = 1200
 RENDER_TIMEOUT_SECONDS = 20.0
-GENERATION_MAX_TOKENS = 4096
+GENERATION_MAX_TOKENS = 3072
 GENERATION_ATTEMPTS = 2
 DEFAULT_COOLDOWN_SECONDS = 15
 MAX_FILES_PER_TURN = 2
@@ -107,6 +108,30 @@ _FORBIDDEN_TAGS = {
     "animatetransform",
     "set",
 }
+_DRAW_ACTION_RE = re.compile(
+    r"\b(нарисуй|нарисуйте|нарисовать|нарисуешь|draw)\b", re.IGNORECASE
+)
+_VISUAL_REQUEST_RE = re.compile(
+    r"\b(покажи|покажите|сделай|сделайте|построй|постройте|изобрази|"
+    r"изобразите|визуализируй|визуализируйте|пришли|пришлите)\b"
+    r".{0,80}\b(схем\w*|диаграмм\w*|график\w*|иллюстрац\w*|рисун\w*|"
+    r"иконк\w*|логотип\w*|инфографик\w*|svg|картин\w*|изображен\w*)",
+    re.IGNORECASE | re.DOTALL,
+)
+_SVG_SOURCE_RE = re.compile(r"\bsvg\b|вектор|исходник", re.IGNORECASE)
+
+
+def is_drawing_request(text: str) -> bool:
+    """True when the user clearly asks for a picture, not an explanation."""
+
+    value = text or ""
+    return bool(
+        _DRAW_ACTION_RE.search(value) or _VISUAL_REQUEST_RE.search(value)
+    )
+
+
+def wants_svg_source(text: str) -> bool:
+    return bool(_SVG_SOURCE_RE.search(text or ""))
 _URL_FUNC_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE)
 
 
@@ -210,8 +235,9 @@ def _choose_model(context: ToolContext) -> str:
     configured = str(context.settings.get("svg_model") or "").strip()
     if configured:
         return configured
-    default_model = str(getattr(context.provider, "default_model", "") or "")
-    return default_model or context.model
+    # The current chat model is already warm and fast; a heavy default model
+    # can exceed the 60s request timeout on Render free.
+    return context.model or str(getattr(context.provider, "default_model", "") or "")
 
 
 async def generate_svg(description: str, context: ToolContext) -> str:
@@ -317,6 +343,12 @@ def build_tool(
             svg = await generate(description, context)
         except SvgError as exc:
             return f"Не удалось нарисовать: {exc}."
+        except LLMError as exc:
+            logger.warning("SVG-модель недоступна: %s", exc)
+            return (
+                "Не удалось нарисовать: модель рисования не ответила. "
+                "Попробуй ещё раз или выбери другую `svg_model`."
+            )
         except Exception:  # noqa: BLE001 - drawing must never break the chat
             logger.exception("Ошибка генерации SVG")
             return "Не удалось нарисовать: ошибка модели."

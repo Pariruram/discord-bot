@@ -67,7 +67,7 @@ class LLMClient:
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.75,
         max_tokens: int = 1200,
-        tool_choice: str | None = "auto",
+        tool_choice: str | dict[str, Any] | None = "auto",
         max_attempts: int | None = None,
     ) -> Any:
         client = self._get_client(spec, model)

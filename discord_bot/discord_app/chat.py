@@ -36,6 +36,7 @@ from discord_bot.tools.base import (
     enabled_tool_names,
 )
 from discord_bot.tools.fetch_url import ReadResult, read_url
+from discord_bot.tools.svg import is_drawing_request, wants_svg_source
 from discord_bot.utils import as_bool, safe_int, split_message
 
 logger = logging.getLogger(__name__)
@@ -247,6 +248,27 @@ class ChatService:
             enabled = enabled_tool_names(
                 settings.get("enabled_tools"), self.registry
             )
+            if "draw_svg" in enabled:
+                messages[0]["content"] = (
+                    f"{messages[0]['content']}\n\n"
+                    "<drawing_rule>Никогда не выводи SVG/HTML-код для рисунка "
+                    "в чат. Для любых рисунков используй инструмент draw_svg. "
+                    "Если он вернул ошибку, коротко объясни её.</drawing_rule>"
+                )
+            forced_tool = (
+                "draw_svg"
+                if "draw_svg" in enabled and is_drawing_request(user_text)
+                else None
+            )
+            if forced_tool == "draw_svg":
+                attach = "true" if wants_svg_source(user_text) else "false"
+                messages[0]["content"] = (
+                    f"{messages[0]['content']}\n\n"
+                    "<drawing_request>Пользователь явно просит рисунок. "
+                    "Вызови draw_svg; не выводи SVG-код в чат. "
+                    f"attach_svg={attach}. Если инструмент вернул ошибку, "
+                    "объясни её коротко.</drawing_request>"
+                )
             max_tokens = safe_int(
                 settings.get("max_tokens"), 1200, minimum=200, maximum=4000
             )
@@ -261,6 +283,7 @@ class ChatService:
                     enabled,
                     tool_context,
                     max_tokens=max_tokens,
+                    forced_tool=forced_tool,
                 )
             except LLMError as exc:
                 logger.warning("LLM недоступна: %s", exc)

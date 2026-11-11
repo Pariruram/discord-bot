@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 import uuid
@@ -29,7 +30,8 @@ from discord_bot.services import Services
 from discord_bot.storage.cache import SettingsCache
 from discord_bot.storage.repository import SupabaseRepository
 from discord_bot.tools import register_builtin
-from discord_bot.tools.base import ToolRegistry
+from discord_bot.tools.base import ToolRegistry, enabled_tool_names
+from discord_bot.utils import parse_json_list
 
 logger = logging.getLogger("discord_bot")
 
@@ -100,12 +102,62 @@ async def _start_bot(
             await sleep(wait)
 
 
+def _resvg_status() -> str:
+    try:
+        import resvg_py  # noqa: F401
+    except Exception as exc:  # noqa: BLE001 - diagnostics only
+        return f"missing:{type(exc).__name__}"
+    return "ok"
+
+
+async def _migrate_draw_tool(
+    settings: SettingsCache, registry: ToolRegistry
+) -> None:
+    """Enable the new drawing tool for bots that already have a tools list."""
+
+    try:
+        if "draw_svg" not in registry.names():
+            return
+        values = await settings.get_all()
+        if values.get("enabled_tools_draw_svg_migrated") == "1":
+            return
+        raw = values.get("enabled_tools")
+        if raw and str(raw).strip():
+            parsed = parse_json_list(raw, default=None)
+            if isinstance(parsed, list):
+                names = [str(item) for item in parsed if isinstance(item, str)]
+                if "draw_svg" not in names:
+                    names.append("draw_svg")
+                    await settings.set(
+                        "enabled_tools",
+                        json.dumps(names, ensure_ascii=False),
+                    )
+                    logger.info("Миграция включила draw_svg в enabled_tools")
+        await settings.set("enabled_tools_draw_svg_migrated", "1")
+    except Exception:  # noqa: BLE001 - a migration must not stop the bot
+        logger.exception("Не удалось выполнить миграцию enabled_tools")
+
+
 async def run_bot(config: Config, health: HealthState | None = None) -> None:
     repo = SupabaseRepository(config.supabase_url, config.supabase_key)
     memory_store = SupabaseMemoryRepository(config.supabase_url, config.supabase_key)
     settings = SettingsCache(repo)
     llm = LLMClient()
     registry = register_builtin(ToolRegistry())
+    await _migrate_draw_tool(settings, registry)
+    if health is not None:
+        try:
+            values = await settings.get_all()
+            health.set_details(
+                tools=registry.names(),
+                enabled_tools=enabled_tool_names(
+                    values.get("enabled_tools"), registry
+                ),
+                svg_renderer=_resvg_status(),
+                svg_model=str(values.get("svg_model") or "provider-default"),
+            )
+        except Exception:  # noqa: BLE001 - health details are optional
+            logger.exception("Не удалось заполнить диагностику /healthz")
     memory = MemoryService(memory_store, settings, llm)
     worker = MemoryWorker(
         memory_store,
