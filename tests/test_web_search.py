@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -164,6 +165,48 @@ async def test_blank_query_is_rejected() -> None:
 
     assert "пустой запрос" in response
     assert search.calls == []
+
+
+async def test_multiple_stale_years_in_a_news_query_are_rejected() -> None:
+    search = FakeSearch()
+    current = datetime.now(UTC).year
+
+    response = await build_tool(search).handler(
+        context(), f"AI news November 11 {current - 2} OR {current - 1}"
+    )
+
+    assert "Поиск не выполнен" in response
+    assert str(current) in response
+    assert "time_range" in response
+    assert search.calls == []
+
+
+async def test_explicit_historical_year_is_allowed() -> None:
+    search = FakeSearch()
+    current = datetime.now(UTC).year
+
+    await build_tool(search).handler(
+        context(), f"новости за {current - 1}"
+    )
+
+    assert search.calls
+    assert str(current - 1) in search.calls[0]["query"]
+
+
+async def test_current_year_or_date_filter_bypasses_the_guard() -> None:
+    search = FakeSearch()
+    current = datetime.now(UTC).year
+
+    await build_tool(search).handler(
+        context(), f"Jensen Huang news {current}"
+    )
+    await build_tool(search).handler(
+        context(),
+        f"AI news November 11 {current - 2} OR {current - 1}",
+        time_range="week",
+    )
+
+    assert len(search.calls) == 2
 
 
 def test_schema_exposes_count_and_date_filters() -> None:

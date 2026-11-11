@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from discord_bot.citations import Citation
@@ -31,9 +32,19 @@ DESCRIPTION = (
     "ответе отдели подтверждённое от неподтверждённого и обязательно дай "
     "ссылки.\n"
     "Запрос — 2–6 ключевых слов без вводных слов; точные названия и цитаты "
-    "заключай в кавычки. Период передавай только если пользователь его назвал. "
-    "Для свежих новостей ставь topic=news; deep=true — только по явной просьбе "
-    "о глубоком исследовании (дороже, 2 кредита)."
+    "заключай в кавычки. Год в query — только если пользователь явно назвал "
+    "год или период. Для свежести вместо года используй topic=news и "
+    "time_range=week/month. Если пользователь называет день/месяц без года — "
+    "бери текущий год из <current_datetime> и передавай start_date/end_date. "
+    "deep=true — только по явной просьбе о глубоком исследовании (дороже, "
+    "2 кредита)."
+)
+
+_YEAR_RE = re.compile(r"\b20\d{2}\b")
+_HISTORICAL_RE = re.compile(
+    r"\b(за|в|с|по|during|in|since|until)\s+20\d{2}\b|"
+    r"\b20\d{2}\s*(год|году|года|year)\b|архив|history|сравн|динамик",
+    re.IGNORECASE,
 )
 
 
@@ -64,6 +75,27 @@ def _parse_date(value: str | None, field: str) -> str | None:
     except ValueError as exc:
         raise ValueError(f"{field} должен быть в формате YYYY-MM-DD") from exc
     return text
+
+
+def _stale_date_error(query: str) -> str | None:
+    """Reject obviously stale years in a news query before spending a credit."""
+
+    years = sorted(set(_YEAR_RE.findall(query)))
+    if not years:
+        return None
+    now = datetime.now(UTC)
+    if str(now.year) in years:
+        return None
+    if _HISTORICAL_RE.search(query):
+        return None
+    if len(years) < 2:
+        return None
+    return (
+        f"Поиск не выполнен: сейчас {now.strftime('%Y-%m-%d')}, а в запросе "
+        f"годы {', '.join(years)}. Убери годы из query: для свежих новостей "
+        "используй topic=news и time_range=week/month, для точной даты — "
+        f"start_date/end_date в {now.year} году."
+    )
 
 
 def build_tool(search: SearchFn | None) -> Tool:
@@ -121,6 +153,11 @@ def build_tool(search: SearchFn | None) -> Tool:
             )
         if start and end and start > end:
             return "Поиск не выполнен: start_date позже end_date."
+
+        if not (period or start or end):
+            stale = _stale_date_error(cleaned)
+            if stale:
+                return stale
 
         kwargs: dict[str, Any] = {
             "query": cleaned,

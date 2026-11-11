@@ -8,6 +8,7 @@ message for its own dialogue with the current user.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 
 DEFAULT_SYSTEM_PROMPT = "Ты — полезный ассистент."
 
@@ -39,6 +40,7 @@ def build_system_prompt(
     bot_name: str = "",
     last_actions: str = "",
     clean: bool = False,
+    now: datetime | None = None,
 ) -> str:
     """Build the system prompt.
 
@@ -65,6 +67,22 @@ def build_system_prompt(
         or DEFAULT_SYSTEM_PROMPT
     )
     parts: list[str] = [f"<identity>\n{identity}\n</identity>"]
+
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    current = current.astimezone(UTC)
+    parts.append(
+        "<current_datetime>\n"
+        f"Сейчас {current.strftime('%Y-%m-%d %H:%M UTC')}.\n"
+        "Эта дата — источник истины. Не полагайся на дату из своих знаний: "
+        "твои знания могли устареть.\n"
+        "Для свежих новостей и актуальных данных используй time_range "
+        "(week/month) и topic=news; не добавляй год в query только для "
+        "свежести. Если пользователь явно назвал год или период — используй "
+        "start_date/end_date, а год в query допустим.\n"
+        "</current_datetime>"
+    )
 
     if author_name:
         where = "личном диалоге" if is_dm else "канале"

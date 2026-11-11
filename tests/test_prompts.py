@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from discord_bot.prompts import DEFAULT_SYSTEM_PROMPT, build_system_prompt
 
 
@@ -63,6 +65,20 @@ def test_normal_prompt_keeps_the_identity_and_persona() -> None:
 
     assert "саркастичный кот" in prompt
     assert "<persona" in prompt
+
+
+def test_prompt_includes_current_date_and_temporal_rules() -> None:
+    prompt = build_system_prompt(
+        "Ты — тестовый ассистент.",
+        author_name="Аня",
+        is_dm=True,
+        now=datetime(2026, 11, 11, 18, 25, tzinfo=UTC),
+    )
+
+    assert "<current_datetime>" in prompt
+    assert "2026-11-11 18:25 UTC" in prompt
+    assert "Не полагайся на дату из своих знаний" in prompt
+    assert "time_range" in prompt
 
 
 def test_prompt_keeps_identity_and_author_separate_from_transcript() -> None:
