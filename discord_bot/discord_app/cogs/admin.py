@@ -55,6 +55,8 @@ ALLOWED_SETTINGS = {
     "debug_mode",
     "auto_links",
     "auto_links_max",
+    "svg_model",
+    "svg_cooldown_seconds",
 }
 
 MODEL_SETTING_KEYS = {
@@ -66,6 +68,7 @@ MODEL_SETTING_KEYS = {
     "gemini_fast_model",
     "groq_model",
     "groq_fast_model",
+    "svg_model",
 }
 
 NUMERIC_SETTINGS = {
@@ -81,6 +84,7 @@ NUMERIC_SETTINGS = {
     "worker_llm_interval_seconds": (0, 60),
     "catch_up_limit": (0, 500),
     "auto_links_max": (1, 3),
+    "svg_cooldown_seconds": (0, 600),
 }
 
 
@@ -113,7 +117,7 @@ class AdminCog(commands.Cog, name="admin"):
             return "gemini"
         if key in {"groq_model", "groq_fast_model"}:
             return "groq"
-        if key in {"chat_model", "model", "utility_model", "fast_model"}:
+        if key in {"chat_model", "model", "utility_model", "fast_model", "svg_model"}:
             return resolve_model_ref(settings, providers).provider
         return None
 

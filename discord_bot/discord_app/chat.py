@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import logging
 import re
 import uuid
@@ -28,7 +29,12 @@ from discord_bot.llm.tool_loop import run_tool_loop
 from discord_bot.memory.service import MemoryService, conversation_scope
 from discord_bot.memory.settings import MemorySettings
 from discord_bot.storage.cache import SettingsCache
-from discord_bot.tools.base import ToolContext, ToolRegistry, enabled_tool_names
+from discord_bot.tools.base import (
+    GeneratedFile,
+    ToolContext,
+    ToolRegistry,
+    enabled_tool_names,
+)
 from discord_bot.tools.fetch_url import ReadResult, read_url
 from discord_bot.utils import as_bool, safe_int, split_message
 
@@ -213,6 +219,9 @@ class ChatService:
                 channel_id=str(channel.id),
                 guild_id=str(message.guild.id) if message.guild else None,
                 settings=settings,
+                llm=self.llm,
+                provider=spec,
+                model=model_ref.model,
             )
             for link in link_results:
                 tool_context.citations.append(
@@ -269,6 +278,14 @@ class ChatService:
                     {"title": citation.title, "url": citation.url}
                     for citation in tool_context.citations
                 ],
+                "files": [
+                    {
+                        "name": generated.filename,
+                        "bytes": len(generated.data),
+                        "mime": generated.mime,
+                    }
+                    for generated in tool_context.files
+                ],
             }
             await self.memory.record_reply(message, result, reply, metadata)
             debug_mode = as_bool(settings.get("debug_mode"), False)
@@ -279,7 +296,7 @@ class ChatService:
             minimum=200,
             maximum=MAX_DISCORD_MESSAGE,
         )
-        await self._send(message, sent, max_len)
+        await self._send(message, sent, max_len, files=tool_context.files)
         if debug_mode:
             await self._send_debug(message, spec, model_ref, tool_context, stats)
 
@@ -327,6 +344,9 @@ class ChatService:
         tools_text = " · ".join(tool_parts) if tool_parts else "нет"
 
         history_chars = int(stats.get("context_chars") or 0)
+        files_text = (
+            f" | файлы: {len(tool_context.files)}" if tool_context.files else ""
+        )
         footer = (
             f"-# 🛠 {getattr(spec, 'name', '?')}/{getattr(model_ref, 'model', '?')}"
             f" | инструменты: {tools_text}"
@@ -334,6 +354,7 @@ class ChatService:
             f" {history_chars} симв.,"
             f" фактов: {stats.get('facts', '?')},"
             f" резюме: {'да' if stats.get('summary') else 'нет'}"
+            f"{files_text}"
         )
         try:
             await message.channel.send(footer, suppress_embeds=True)
@@ -357,12 +378,38 @@ class ChatService:
             content = content.replace(f"<@!{self.bot.user.id}>", "")
         return content.strip() or "Привет"
 
-    async def _send(self, message: discord.Message, reply: str, max_len: int) -> None:
+    def _discord_files(self, files: list[GeneratedFile]) -> list[discord.File]:
+        return [
+            discord.File(io.BytesIO(generated.data), filename=generated.filename)
+            for generated in files
+        ]
+
+    async def _send(
+        self,
+        message: discord.Message,
+        reply: str,
+        max_len: int,
+        *,
+        files: list[GeneratedFile] | None = None,
+    ) -> None:
         chunks = split_message(reply, max_len=max_len)
         if not chunks:
             chunks = ["Извини, не удалось сформировать ответ."]
+        attachments = self._discord_files(files or [])
         try:
-            await message.reply(chunks[0], suppress_embeds=True)
+            try:
+                await message.reply(
+                    chunks[0], files=attachments, suppress_embeds=True
+                )
+            except discord.HTTPException as exc:
+                if not attachments or getattr(exc, "status", None) == 429:
+                    raise
+                # A rejected attachment must not cost the user the whole reply.
+                logger.warning(
+                    "Не удалось отправить файлы (%s), повторяю без вложений",
+                    exc,
+                )
+                await message.reply(chunks[0], suppress_embeds=True)
             for chunk in chunks[1:]:
                 await message.channel.send(chunk, suppress_embeds=True)
         except discord.HTTPException as exc:

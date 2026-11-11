@@ -14,9 +14,18 @@ from discord_bot.utils import parse_json_list, truncate
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ENABLED_TOOLS = ("web_search", "fetch_url")
+DEFAULT_ENABLED_TOOLS = ("web_search", "fetch_url", "draw_svg")
 
 ToolHandler = Callable[..., Awaitable[str]]
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedFile:
+    """A file a tool wants to attach to the bot's reply."""
+
+    filename: str
+    data: bytes
+    mime: str = "application/octet-stream"
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +37,12 @@ class ToolContext:
     citations: list[Citation] = field(default_factory=list)
     # Factual record of what actually ran this turn: [{"tool": ..., "args": ...}]
     tool_trace: list[dict[str, Any]] = field(default_factory=list)
+    # Files (PNG previews, generated SVG sources) attached to the reply.
+    files: list[GeneratedFile] = field(default_factory=list)
+    # Runtime deps for tools that need an extra model call (e.g. draw_svg).
+    llm: Any | None = None
+    provider: Any | None = None
+    model: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +51,7 @@ class Tool:
     description: str
     parameters: dict[str, Any]
     handler: ToolHandler
+    timeout: float | None = None
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -112,12 +128,13 @@ class ToolRegistry:
         try:
             result = await asyncio.wait_for(
                 tool.handler(context, **args),
-                timeout=self._timeout,
+                timeout=tool.timeout or self._timeout,
             )
         except TimeoutError:
-            logger.warning("Инструмент %s не ответил за %.1fs", name, self._timeout)
-            entry["error"] = f"таймаут {self._timeout:.0f} сек"
-            return f"Ошибка: инструмент {name!r} не ответил за {self._timeout:.0f} сек."
+            timeout = tool.timeout or self._timeout
+            logger.warning("Инструмент %s не ответил за %.1fs", name, timeout)
+            entry["error"] = f"таймаут {timeout:.0f} сек"
+            return f"Ошибка: инструмент {name!r} не ответил за {timeout:.0f} сек."
         except TypeError as exc:
             logger.warning("Неверные args инструмента %s: %s", name, exc)
             entry["error"] = str(exc)
