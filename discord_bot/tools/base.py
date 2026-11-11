@@ -54,6 +54,8 @@ class ToolContext:
     force_pixel_plus: bool = False
     # ``/pixel-test``: native pixel-art SVG instead of post-processing.
     force_pixel_test: bool = False
+    # ``/pixel-test2``: native 32×32, one pixel per cell, no upscale.
+    force_pixel_test2: bool = False
 
 
 @dataclass(frozen=True, slots=True)

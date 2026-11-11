@@ -53,21 +53,22 @@ MAX_DISCORD_MESSAGE = 2000
 # answer while keeping the whole conversational context. ``/svg`` at the end
 # asks to attach the vector source of a drawing; ``/pixel`` asks for pixel art.
 END_MARKER_RE = re.compile(
-    r"(?:^|\s)/(clean|c|svg|pixel-test|pixel\+|pixel)\s*$",
+    r"(?:^|\s)/(clean|c|svg|pixel-test2|pixel-test|pixel\+|pixel)\s*$",
     re.IGNORECASE,
 )
 
 
 def split_end_markers(
     text: str,
-) -> tuple[str, bool, bool, bool, bool, bool]:
-    """Return ``(text, clean, svg, pixel, pixel_plus, pixel_test)``."""
+) -> tuple[str, bool, bool, bool, bool, bool, bool]:
+    """Return ``(text, clean, svg, pixel, pixel_plus, pixel_test, pixel_test2)``."""
 
     clean = False
     svg = False
     pixel = False
     pixel_plus = False
     pixel_test = False
+    pixel_test2 = False
     value = text
     while True:
         match = END_MARKER_RE.search(value)
@@ -83,18 +84,20 @@ def split_end_markers(
             pixel_plus = True
         elif marker == "pixel-test":
             pixel_test = True
+        elif marker == "pixel-test2":
+            pixel_test2 = True
         elif marker == "pixel":
             pixel = True
         else:
             clean = True
         value = stripped
-    return value, clean, svg, pixel, pixel_plus, pixel_test
+    return value, clean, svg, pixel, pixel_plus, pixel_test, pixel_test2
 
 
 def split_clean_marker(text: str) -> tuple[str, bool]:
     """Backward-compatible wrapper returning only the clean flag."""
 
-    value, clean, _, _, _, _ = split_end_markers(text)
+    value, clean, _, _, _, _, _ = split_end_markers(text)
     return value, clean
 
 
@@ -185,9 +188,15 @@ class ChatService:
             # that actually involve it, never ambient chatter in every channel.
             return
 
-        user_text, clean_mode, svg_source, pixel_art, pixel_plus, pixel_test = (
-            split_end_markers(message.content or "")
-        )
+        (
+            user_text,
+            clean_mode,
+            svg_source,
+            pixel_art,
+            pixel_plus,
+            pixel_test,
+            pixel_test2,
+        ) = split_end_markers(message.content or "")
         image_parts, image_note = await collect_image_parts(message)
         source_svg = await collect_source_svg(message)
         stored_text = "\n".join(
@@ -267,6 +276,7 @@ class ChatService:
                 force_pixel_art=pixel_art,
                 force_pixel_plus=pixel_plus,
                 force_pixel_test=pixel_test,
+                force_pixel_test2=pixel_test2,
             )
             for link in link_results:
                 tool_context.citations.append(
@@ -297,6 +307,7 @@ class ChatService:
                 pixel_art
                 or pixel_plus
                 or pixel_test
+                or pixel_test2
                 or wants_pixel_art(user_text)
             )
             if "draw_svg" in enabled:
@@ -325,6 +336,7 @@ class ChatService:
                     or pixel_art
                     or pixel_plus
                     or pixel_test
+                    or pixel_test2
                 ):
                     forced_tool = "draw_svg"
             if forced_tool == "draw_svg":

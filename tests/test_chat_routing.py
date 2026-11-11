@@ -175,6 +175,7 @@ def test_svg_marker_is_stripped_and_detected() -> None:
         False,
         False,
         False,
+        False,
     )
     assert split_end_markers("нарисуй краба /SVG") == (
         "нарисуй краба",
@@ -183,11 +184,12 @@ def test_svg_marker_is_stripped_and_detected() -> None:
         False,
         False,
         False,
+        False,
     )
 
 
 def test_both_end_markers_work_in_any_order() -> None:
-    expected = ("нарисуй схему", True, True, False, False, False)
+    expected = ("нарисуй схему", True, True, False, False, False, False)
 
     assert split_end_markers("нарисуй схему /c /svg") == expected
     assert split_end_markers("нарисуй схему /svg /c") == expected
@@ -201,6 +203,7 @@ def test_svg_marker_requires_boundaries_and_content() -> None:
         False,
         False,
         False,
+        False,
     )
     assert split_end_markers("/svg") == (
         "/svg",
@@ -209,9 +212,11 @@ def test_svg_marker_requires_boundaries_and_content() -> None:
         False,
         False,
         False,
+        False,
     )
     assert split_end_markers("нарисуй схему /svg.") == (
         "нарисуй схему /svg.",
+        False,
         False,
         False,
         False,
@@ -228,6 +233,7 @@ def test_pixel_marker_is_stripped_and_detected() -> None:
         True,
         False,
         False,
+        False,
     )
     assert split_end_markers("нарисуй схему /svg /pixel /c") == (
         "нарисуй схему",
@@ -236,9 +242,11 @@ def test_pixel_marker_is_stripped_and_detected() -> None:
         True,
         False,
         False,
+        False,
     )
     assert split_end_markers("https://example.com/pixel") == (
         "https://example.com/pixel",
+        False,
         False,
         False,
         False,
@@ -255,6 +263,7 @@ def test_pixel_plus_marker_keeps_the_original() -> None:
         False,
         True,
         False,
+        False,
     )
     assert split_end_markers("нарисуй краба /pixel+ /svg") == (
         "нарисуй краба",
@@ -263,9 +272,11 @@ def test_pixel_plus_marker_keeps_the_original() -> None:
         False,
         True,
         False,
+        False,
     )
     assert split_end_markers("https://example.com/pixel+") == (
         "https://example.com/pixel+",
+        False,
         False,
         False,
         False,
@@ -282,6 +293,7 @@ def test_pixel_test_marker_selects_the_native_mode() -> None:
         False,
         False,
         True,
+        False,
     )
     assert split_end_markers("нарисуй краба /pixel-test /svg /c") == (
         "нарисуй краба",
@@ -290,9 +302,41 @@ def test_pixel_test_marker_selects_the_native_mode() -> None:
         False,
         False,
         True,
+        False,
     )
     assert split_end_markers("https://example.com/pixel-test") == (
         "https://example.com/pixel-test",
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+    )
+
+
+def test_pixel_test2_marker_selects_the_one_to_one_mode() -> None:
+    assert split_end_markers("нарисуй краба /pixel-test2") == (
+        "нарисуй краба",
+        False,
+        False,
+        False,
+        False,
+        False,
+        True,
+    )
+    assert split_end_markers("нарисуй краба /pixel-test2 /svg /c") == (
+        "нарисуй краба",
+        True,
+        True,
+        False,
+        False,
+        False,
+        True,
+    )
+    assert split_end_markers("https://example.com/pixel-test2") == (
+        "https://example.com/pixel-test2",
+        False,
         False,
         False,
         False,

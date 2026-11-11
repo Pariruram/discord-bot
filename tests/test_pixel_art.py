@@ -8,7 +8,7 @@ from PIL import Image
 
 from discord_bot.discord_app.pixel_art import PixelArtError, pixelate
 from discord_bot.tools.base import ToolContext
-from discord_bot.tools.svg import build_tool, wants_pixel_art
+from discord_bot.tools.svg import build_tool, png_size, wants_pixel_art
 
 
 def sample_png(width: int = 200, height: int = 100) -> bytes:
@@ -225,3 +225,37 @@ async def test_native_pixel_mode_renders_at_a_grid_multiple() -> None:
     assert "Нативный пиксель-арт" in result
     assert len(context.files) == 2
     assert context.files[1].filename.endswith("-pixel.png")
+
+
+async def test_pixel_test2_renders_exactly_32_by_32() -> None:
+    png = sample_png(32, 32)
+    widths: list[int] = []
+
+    async def generate(description: str, ctx: ToolContext) -> str:
+        return (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+            '<rect width="32" height="32"/></svg>'
+        )
+
+    def render(svg: str, width: int = 1200) -> bytes:
+        widths.append(width)
+        return png
+
+    tool = build_tool(generator=generate, renderer=render)
+    context = ToolContext(
+        user_id="u1",
+        channel_id="c1",
+        settings={"pixel_grid": "32", "pixel_colors": "8"},
+        provider=SimpleNamespace(name="gemini", default_model="x"),
+        model="gemini-3.5-flash-lite",
+        force_pixel_test2=True,
+    )
+
+    result = await tool.handler(context, "краб")
+
+    assert widths == [32]
+    assert "1:1" in result
+    assert "32×32" in result
+    assert len(context.files) == 1
+    assert context.files[0].filename.endswith("-pixel.png")
+    assert png_size(context.files[0].data) == (32, 32)

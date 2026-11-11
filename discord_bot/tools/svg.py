@@ -366,7 +366,9 @@ async def generate_svg(description: str, context: ToolContext) -> str:
         raise SvgError("генерация SVG недоступна: нет LLM-контекста")
 
     model = _choose_model(context)
-    pixel_mode = bool(context.force_pixel_test)
+    pixel_mode = bool(
+        context.force_pixel_test or context.force_pixel_test2
+    )
     grid, colors = _pixel_params(context)
     system_prompt = (
         _native_pixel_prompt(grid, colors)
@@ -457,13 +459,19 @@ def build_tool(
                 f"{MAX_PROMPT_CHARS} символов."
             )
         improving = bool(context.source_svg)
-        native_pixel = bool(context.force_pixel_test)
+        native_pixel = bool(
+            context.force_pixel_test or context.force_pixel_test2
+        )
+        one_to_one = bool(context.force_pixel_test2)
         attach_svg = bool(attach_svg or context.force_svg_source or improving)
-        keep_original = bool(context.force_pixel_plus or native_pixel)
+        keep_original = bool(
+            context.force_pixel_plus or context.force_pixel_test
+        )
         use_pixel = bool(
             pixel_art
             or context.force_pixel_art
             or keep_original
+            or one_to_one
         )
         grid = safe_int(
             context.settings.get("pixel_grid"),
@@ -483,7 +491,12 @@ def build_tool(
             minimum=MIN_BLOCK,
             maximum=MAX_BLOCK,
         )
-        render_width = grid * block * 6 if native_pixel else RENDER_WIDTH
+        if one_to_one:
+            render_width = grid
+        elif native_pixel:
+            render_width = grid * block * 6
+        else:
+            render_width = RENDER_WIDTH
         needed = 1 + (1 if attach_svg else 0) + (
             1 if use_pixel and keep_original else 0
         )
@@ -537,7 +550,7 @@ def build_tool(
         original_size = (
             png_size(png) if original_png is not None else None
         )
-        if use_pixel:
+        if use_pixel and not one_to_one:
             try:
                 png = await asyncio.wait_for(
                     asyncio.to_thread(
@@ -598,7 +611,12 @@ def build_tool(
             suffix = " Исходный SVG прикреплён."
         else:
             suffix = ""
-        if native_pixel and keep_original and original_size is not None:
+        if one_to_one:
+            kind = (
+                f"Нативный пиксель-арт 1:1: PNG {width}×{height} "
+                f"(1 пиксель = 1 клетка, {colors} цветов)"
+            )
+        elif native_pixel and keep_original and original_size is not None:
             kind = (
                 f"Нативный пиксель-арт: оригинал "
                 f"{original_size[0]}×{original_size[1]} + пиксель "
