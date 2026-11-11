@@ -66,7 +66,7 @@ async def _close_login_session(bot: Any) -> None:
 
 
 LOGIN_GATE_KEY = "login_blocked_until"
-PREVIOUS_INSTANCE_STALE_SECONDS = 75.0
+PREVIOUS_INSTANCE_STALE_SECONDS = 180.0
 PREVIOUS_INSTANCE_POLL_SECONDS = 5.0
 
 

@@ -59,6 +59,7 @@ ALLOWED_SETTINGS = {
     "svg_cooldown_seconds",
     "pixel_grid",
     "pixel_colors",
+    "search_max_results",
 }
 
 MODEL_SETTING_KEYS = {
@@ -89,6 +90,7 @@ NUMERIC_SETTINGS = {
     "svg_cooldown_seconds": (0, 600),
     "pixel_grid": (32, 128),
     "pixel_colors": (8, 32),
+    "search_max_results": (1, 10),
 }
 
 
