@@ -45,6 +45,9 @@ class ToolContext:
     model: str = ""
     # ``/svg`` at the end of the user message: attach vector sources.
     force_svg_source: bool = False
+    # A user-supplied SVG attachment to improve (already validated as XML).
+    source_svg: str = ""
+    source_svg_name: str = ""
 
 
 @dataclass(frozen=True, slots=True)

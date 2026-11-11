@@ -22,6 +22,7 @@ from discord_bot.discord_app.links import (
     format_link_block,
     urls_to_prefetch,
 )
+from discord_bot.discord_app.svg_input import collect_source_svg
 from discord_bot.llm.client import LLMClient, LLMError
 from discord_bot.llm.models import resolve_model_ref
 from discord_bot.llm.providers import build_providers
@@ -36,7 +37,11 @@ from discord_bot.tools.base import (
     enabled_tool_names,
 )
 from discord_bot.tools.fetch_url import ReadResult, read_url
-from discord_bot.tools.svg import is_drawing_request, wants_svg_source
+from discord_bot.tools.svg import (
+    is_drawing_request,
+    is_svg_improvement_request,
+    wants_svg_source,
+)
 from discord_bot.utils import as_bool, safe_int, split_message
 
 logger = logging.getLogger(__name__)
@@ -174,8 +179,11 @@ class ChatService:
             message.content or ""
         )
         image_parts, image_note = await collect_image_parts(message)
+        source_svg = await collect_source_svg(message)
         stored_text = "\n".join(
-            part for part in (user_text, image_note) if part
+            part
+            for part in (user_text, image_note, source_svg.note)
+            if part
         )
         result = await self.memory.ingest(
             message, incoming, content=stored_text or None
@@ -244,6 +252,8 @@ class ChatService:
                 provider=spec,
                 model=model_ref.model,
                 force_svg_source=svg_source,
+                source_svg=source_svg.content,
+                source_svg_name=source_svg.filename,
             )
             for link in link_results:
                 tool_context.citations.append(
@@ -269,22 +279,35 @@ class ChatService:
             enabled = enabled_tool_names(
                 settings.get("enabled_tools"), self.registry
             )
+            has_source_svg = bool(source_svg.content)
             if "draw_svg" in enabled:
+                rule = (
+                    "Никогда не выводи SVG/HTML-код для рисунка "
+                    "в чат. Для любых рисунков используй инструмент draw_svg. "
+                    "Если он вернул ошибку, коротко объясни её."
+                )
+                if has_source_svg:
+                    rule += (
+                        " Пользователь приложил SVG-исходник: если он просит "
+                        "улучшить/перерисовать/исправить, вызови draw_svg — "
+                        "исходник уже передан инструменту, не вставляй его в чат."
+                    )
                 messages[0]["content"] = (
                     f"{messages[0]['content']}\n\n"
-                    "<drawing_rule>Никогда не выводи SVG/HTML-код для рисунка "
-                    "в чат. Для любых рисунков используй инструмент draw_svg. "
-                    "Если он вернул ошибку, коротко объясни её.</drawing_rule>"
+                    f"<drawing_rule>{rule}</drawing_rule>"
                 )
-            forced_tool = (
-                "draw_svg"
-                if "draw_svg" in enabled and is_drawing_request(user_text)
-                else None
-            )
+            forced_tool = None
+            if "draw_svg" in enabled:
+                if is_svg_improvement_request(
+                    user_text, has_source_svg
+                ) or is_drawing_request(user_text):
+                    forced_tool = "draw_svg"
             if forced_tool == "draw_svg":
                 attach = (
                     "true"
-                    if svg_source or wants_svg_source(user_text)
+                    if has_source_svg
+                    or svg_source
+                    or wants_svg_source(user_text)
                     else "false"
                 )
                 messages[0]["content"] = (
