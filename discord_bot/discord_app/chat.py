@@ -22,6 +22,7 @@ from discord_bot.discord_app.links import (
     format_link_block,
     urls_to_prefetch,
 )
+from discord_bot.discord_app.reddit import find_reddit_url
 from discord_bot.discord_app.svg_input import collect_source_svg
 from discord_bot.llm.client import LLMClient, LLMError
 from discord_bot.llm.models import resolve_model_ref
@@ -193,6 +194,16 @@ class ChatService:
         ) = split_end_markers(message.content or "")
         image_parts, image_note = await collect_image_parts(message)
         source_svg = await collect_source_svg(message)
+        reddit_url = find_reddit_url(user_text)
+        if reddit_url is None:
+            reference = getattr(message, "reference", None)
+            resolved = getattr(reference, "resolved", None) if reference else None
+            if resolved is not None and not getattr(
+                getattr(resolved, "author", None), "bot", False
+            ):
+                reddit_url = find_reddit_url(
+                    str(getattr(resolved, "content", "") or "")
+                )
         stored_text = "\n".join(
             part
             for part in (user_text, image_note, source_svg.note)
@@ -225,7 +236,11 @@ class ChatService:
             return
         spec = providers[model_ref.provider]
 
-        prefetch_urls = urls_to_prefetch(message, settings)
+        prefetch_urls = [
+            url
+            for url in urls_to_prefetch(message, settings)
+            if find_reddit_url(url) is None
+        ]
         previews = (
             collect_previews(message, limit=len(prefetch_urls))
             if prefetch_urls
@@ -318,13 +333,23 @@ class ChatService:
                     f"<drawing_rule>{rule}</drawing_rule>"
                 )
             forced_tool = None
-            if "draw_svg" in enabled:
+            if reddit_url and "read_thread" in enabled:
+                forced_tool = "read_thread"
+            elif "draw_svg" in enabled:
                 if (
                     is_svg_improvement_request(user_text, has_source_svg)
                     or is_drawing_request(user_text)
                     or pixel_art
                 ):
                     forced_tool = "draw_svg"
+            if forced_tool == "read_thread":
+                messages[0]["content"] = (
+                    f"{messages[0]['content']}\n\n"
+                    "<thread_request>Пользователь прислал Reddit-тред. "
+                    f"Вызови read_thread с url={reddit_url}; не используй "
+                    "fetch_url для этой ссылки. Затем ответь по summary."
+                    "</thread_request>"
+                )
             if forced_tool == "draw_svg":
                 attach = (
                     "true"

@@ -189,6 +189,7 @@ class AdminCog(commands.Cog, name="admin"):
                 "instance_heartbeat",
                 "login_blocked_until",
                 "enabled_tools_draw_svg_migrated",
+                "enabled_tools_read_thread_migrated",
                 "pixel_palettes",
             }
         }

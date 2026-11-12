@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -69,18 +70,20 @@ class FakeRegistry:
         self.contexts: list[Any] = []
 
     def names(self) -> list[str]:
-        return ["draw_svg"]
+        return ["draw_svg", "read_thread"]
 
     def schemas(self, enabled: list[str]) -> list[dict[str, Any]]:
         return [
             {
                 "type": "function",
                 "function": {
-                    "name": "draw_svg",
-                    "description": "draw",
+                    "name": name,
+                    "description": name,
                     "parameters": {"type": "object", "properties": {}},
                 },
             }
+            for name in ("draw_svg", "read_thread")
+            if name in enabled
         ]
 
     async def execute(self, name: str, raw_args: str, context: Any) -> str:
@@ -88,10 +91,12 @@ class FakeRegistry:
         return "drawn"
 
 
-def tool_call() -> SimpleNamespace:
+def tool_call(
+    name: str = "draw_svg", arguments: str = '{"prompt": "улучши"}'
+) -> SimpleNamespace:
     return SimpleNamespace(
         id="call-1",
-        function=SimpleNamespace(name="draw_svg", arguments='{"prompt": "улучши"}'),
+        function=SimpleNamespace(name=name, arguments=arguments),
     )
 
 
@@ -224,3 +229,30 @@ async def test_pixel_grid_and_palette_reach_the_tool_context(monkeypatch) -> Non
     assert context.force_pixel_art is True
     assert context.force_pixel_grid == 64
     assert context.pixel_palette == "gameboy"
+
+
+async def test_reddit_link_forces_read_thread(monkeypatch) -> None:
+    url = (
+        "https://www.reddit.com/r/aigamedev/comments/1xsxna4/"
+        "heres_a_good_one_for_the_code_is_okay_but_you/"
+    )
+    chat, memory, llm, registry = build(
+        monkeypatch,
+        [
+            response(
+                tool_calls=[
+                    tool_call("read_thread", json.dumps({"url": url}))
+                ]
+            ),
+            response(content="Итог треда."),
+        ],
+    )
+
+    await chat._handle(dm(url))
+
+    assert llm.calls[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "read_thread"},
+    }
+    assert "thread_request" in llm.messages[0]["content"]
+    assert memory.recorded is not None

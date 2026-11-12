@@ -200,12 +200,17 @@ async def _http_fetch(
     resolver: Resolver | None = None,
     budget: float = REQUEST_BUDGET_SECONDS,
     transport: httpx.AsyncBaseTransport | None = None,
+    allowed_types: set[str] | None = None,
 ) -> FetchedPage:
     """GET a page with manual redirects, each one re-validated."""
 
     async with asyncio.timeout(budget):
         return await _http_fetch_inner(
-            url, resolver=resolver, budget=budget, transport=transport
+            url,
+            resolver=resolver,
+            budget=budget,
+            transport=transport,
+            allowed_types=allowed_types,
         )
 
 
@@ -215,6 +220,7 @@ async def _http_fetch_inner(
     resolver: Resolver | None = None,
     budget: float = REQUEST_BUDGET_SECONDS,
     transport: httpx.AsyncBaseTransport | None = None,
+    allowed_types: set[str] | None = None,
 ) -> FetchedPage:
     deadline = time.monotonic() + budget
     current = url
@@ -256,7 +262,8 @@ async def _http_fetch_inner(
                         response.headers.get("content-type") or ""
                     )
                     base_type = content_type.split(";")[0].strip().lower()
-                    if base_type and base_type not in ALLOWED_CONTENT_TYPES:
+                    allowed = allowed_types or ALLOWED_CONTENT_TYPES
+                    if base_type and base_type not in allowed:
                         raise FetchError("это не текстовая страница")
 
                     data = bytearray()

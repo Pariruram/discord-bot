@@ -14,7 +14,7 @@ from discord_bot.utils import parse_json_list, truncate
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ENABLED_TOOLS = ("web_search", "fetch_url", "draw_svg")
+DEFAULT_ENABLED_TOOLS = ("web_search", "fetch_url", "draw_svg", "read_thread")
 
 ToolHandler = Callable[..., Awaitable[str]]
 
@@ -63,6 +63,7 @@ class Tool:
     parameters: dict[str, Any]
     handler: ToolHandler
     timeout: float | None = None
+    max_result_chars: int | None = None
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -157,6 +158,8 @@ class ToolRegistry:
 
         if not isinstance(result, str):
             result = str(result)
-        result = truncate(result, self._max_result_chars)
+        result = truncate(
+            result, tool.max_result_chars or self._max_result_chars
+        )
         entry["chars"] = len(result)
         return result

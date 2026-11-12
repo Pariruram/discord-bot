@@ -288,6 +288,34 @@ async def _migrate_draw_tool(
         logger.exception("Не удалось выполнить миграцию enabled_tools")
 
 
+async def _migrate_read_thread(
+    settings: SettingsCache, registry: ToolRegistry
+) -> None:
+    """Enable the Reddit reader for bots with an older explicit tool list."""
+
+    try:
+        if "read_thread" not in registry.names():
+            return
+        values = await settings.get_all()
+        if values.get("enabled_tools_read_thread_migrated") == "1":
+            return
+        raw = values.get("enabled_tools")
+        if raw and str(raw).strip():
+            parsed = parse_json_list(raw, default=None)
+            if isinstance(parsed, list):
+                names = [str(item) for item in parsed if isinstance(item, str)]
+                if "read_thread" not in names:
+                    names.append("read_thread")
+                    await settings.set(
+                        "enabled_tools",
+                        json.dumps(names, ensure_ascii=False),
+                    )
+                    logger.info("Миграция включила read_thread в enabled_tools")
+        await settings.set("enabled_tools_read_thread_migrated", "1")
+    except Exception:  # noqa: BLE001 - a migration must not stop the bot
+        logger.exception("Не удалось выполнить миграцию read_thread")
+
+
 async def run_bot(config: Config, health: HealthState | None = None) -> None:
     repo = SupabaseRepository(config.supabase_url, config.supabase_key)
     memory_store = SupabaseMemoryRepository(config.supabase_url, config.supabase_key)
@@ -295,6 +323,7 @@ async def run_bot(config: Config, health: HealthState | None = None) -> None:
     llm = LLMClient()
     registry = register_builtin(ToolRegistry())
     await _migrate_draw_tool(settings, registry)
+    await _migrate_read_thread(settings, registry)
     await ensure_palettes(settings)
     if health is not None:
         try:
