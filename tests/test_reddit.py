@@ -48,6 +48,26 @@ def atom_feed() -> str:
 </feed>"""
 
 
+def long_atom_feed() -> str:
+    post = html.escape("<p>Пост про Saltline и код.</p>")
+    comment = html.escape("<p>" + "текст комментария " * 200 + "</p>")
+    entries = "".join(
+        f"<entry><author><name>/u/U{index}</name></author>"
+        f'<content type="html">{comment}</content></entry>'
+        for index in range(20)
+    )
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Длинный тред</title>
+  <entry>
+    <author><name>/u/OP</name></author>
+    <title>Длинный тред</title>
+    <content type="html">{post}</content>
+  </entry>
+  {entries}
+</feed>"""
+
+
 class FakeFetcher:
     def __init__(self, text: str = "") -> None:
         self.text = text or atom_feed()
@@ -316,7 +336,7 @@ async def test_long_thread_is_summarized_in_chunks() -> None:
     summary = await summarize_thread(text, context(llm))
 
     assert summary == "Краткое обобщение."
-    assert len(llm.calls) == 4
+    assert len(llm.calls) == 7
 
 
 async def test_partial_chunk_failure_keeps_other_parts(monkeypatch) -> None:
@@ -329,19 +349,31 @@ async def test_partial_chunk_failure_keeps_other_parts(monkeypatch) -> None:
 
     assert "Часть 1" in summary
     assert "Часть 3" in summary
-    assert "Не обработаны части: 2 из 3" in summary
-    assert "Не обработана часть 2 из 3" in summary
-    assert len(llm.calls) == 5
+    assert "Не обработаны части: 2 из 6" in summary
+    assert "Не обработана часть 2 из 6" in summary
+    assert len(llm.calls) == 8
 
 
 async def test_all_chunks_failing_raises(monkeypatch) -> None:
     monkeypatch.setattr(read_thread_module, "RETRY_DELAY_SECONDS", 0)
-    llm = FailingLLM({1, 2, 3, 4, 5, 6})
+    llm = FailingLLM(set(range(1, 13)))
 
     with pytest.raises(LLMError):
         await summarize_thread("комментарий\n" * 6000, context(llm))
 
-    assert len(llm.calls) == 6
+    assert len(llm.calls) == 12
+
+
+async def test_bad_request_is_not_retried(monkeypatch) -> None:
+    monkeypatch.setattr(read_thread_module, "RETRY_DELAY_SECONDS", 0)
+    llm = FailingLLM({1}, kind=ErrorKind.bad_request)
+
+    summary = await summarize_thread(
+        "комментарий\n" * 6000, context(llm)
+    )
+
+    assert "Не обработана часть 1 из 6" in summary
+    assert len(llm.calls) == 7
 
 
 async def test_provider_overload_is_retried_once(monkeypatch) -> None:
@@ -372,9 +404,30 @@ async def test_tool_cites_thread_when_summary_fails(monkeypatch) -> None:
     result = await build_tool(FakeFetcher()).handler(ctx, URL)
 
     assert "URL:" in result
-    assert "read_thread повторно" in result
+    assert "Модель обобщения перегружена" in result
+    assert "/u/Artist" in result
     assert ctx.citations[0].url == URL
     assert ctx.citations[0].title == "Тред про Saltline"
+
+
+async def test_all_chunks_failing_returns_extractive_fallback(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(read_thread_module, "RETRY_DELAY_SECONDS", 0)
+    llm = FailingLLM(set(range(1, 30)))
+    ctx = context(llm)
+    tool = build_tool(FakeFetcher(long_atom_feed()), min_interval=0)
+
+    result = await tool.handler(ctx, URL)
+
+    assert "Длинный тред" in result
+    assert "Комментариев: 20" in result
+    assert "Модель обобщения перегружена" in result
+    assert "Пост:" in result
+    assert "/u/U0" in result
+    assert "/u/U19" in result
+    assert ctx.citations[0].url == URL
+    assert len(llm.calls) == 14
 
 
 async def test_rss_failure_is_user_facing() -> None:

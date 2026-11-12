@@ -25,8 +25,8 @@ from discord_bot.tools.fetch_url import _http_fetch
 logger = logging.getLogger(__name__)
 
 MAX_SUMMARY_CHARS = 12_000
-CHUNK_CHARS = 24_000
-MAX_CHUNKS = 3
+CHUNK_CHARS = 12_000
+MAX_CHUNKS = 7
 CHUNK_MAX_TOKENS = 1200
 FINAL_MAX_TOKENS = 2000
 RETRY_DELAY_SECONDS = 2.5
@@ -36,6 +36,10 @@ MIN_FETCH_INTERVAL_SECONDS = 3.0
 MAX_CACHED_THREADS = 64
 TAVILY_MIN_CHARS = 1000
 TAVILY_MAX_CHARS = 80_000
+EXTRACTIVE_COMMENTS = 8
+EXTRACTIVE_COMMENT_CHARS = 400
+EXTRACTIVE_POST_CHARS = 800
+EXTRACTIVE_TEXT_CHARS = 4000
 REDDIT_CONTENT_TYPES = {
     "application/atom+xml",
     "application/rss+xml",
@@ -255,6 +259,55 @@ def _unavailable_message(url: str) -> str:
     )
 
 
+def _llm_failure_reason(exc: LLMError) -> str:
+    if exc.kind is ErrorKind.provider_unavailable:
+        return "Модель обобщения перегружена."
+    if exc.kind is ErrorKind.bad_request:
+        return "Провайдер отклонил запрос обобщения."
+    return "Модель обобщения недоступна."
+
+
+def _extractive_fallback(
+    thread: RedditThread, url: str, *, reason: str
+) -> str:
+    comments = thread.comments
+    if len(comments) <= EXTRACTIVE_COMMENTS:
+        indexes = list(range(len(comments)))
+    else:
+        selected = set(range(2))
+        selected.update(range(len(comments) - 2, len(comments)))
+        longest = sorted(
+            range(len(comments)),
+            key=lambda index: len(comments[index][1]),
+            reverse=True,
+        )
+        for index in longest:
+            if len(selected) >= EXTRACTIVE_COMMENTS:
+                break
+            selected.add(index)
+        indexes = sorted(selected)
+
+    lines = [
+        f"Reddit-тред: {thread.title or thread_label(url)}",
+        f"URL: {url}",
+        f"Комментариев: {len(comments)}",
+        "",
+        f"{reason} Ниже несколько комментариев из треда:",
+    ]
+    post = " ".join((thread.post_text or "").split())
+    if post:
+        if len(post) > EXTRACTIVE_POST_CHARS:
+            post = post[:EXTRACTIVE_POST_CHARS].rstrip() + "…"
+        lines.extend(["", f"Пост: {post}"])
+    for index in indexes:
+        author, text = comments[index]
+        text = " ".join(text.split())
+        if len(text) > EXTRACTIVE_COMMENT_CHARS:
+            text = text[:EXTRACTIVE_COMMENT_CHARS].rstrip() + "…"
+        lines.append(f"[{index + 1}] {author}: {text}")
+    return "\n".join(lines)
+
+
 async def _summarize_extracted(
     target: str, text: str, context: ToolContext
 ) -> str:
@@ -262,13 +315,16 @@ async def _summarize_extracted(
         summary = await summarize_thread(text, context)
     except LLMError as exc:
         logger.warning("Reddit-обобщение Tavily не выполнено: %s", exc)
+        reason = _llm_failure_reason(exc)
+        logger.info(
+            "Reddit Tavily extractive fallback: chars=%s",
+            min(len(text), EXTRACTIVE_TEXT_CHARS),
+        )
         return (
             f"Reddit-тред: {thread_label(target)}\n"
             f"URL: {target}\n\n"
-            "Текст получен через Tavily Extract, но обобщить его не удалось: "
-            "модель перегружена. Не вызывай read_thread повторно и не "
-            "заменяй обсуждение результатами web_search — честно скажи, что "
-            "тред сейчас не удалось обобщить."
+            f"{reason} Ниже начало текста треда:\n\n"
+            f"{text[:EXTRACTIVE_TEXT_CHARS]}"
         )
     except Exception:  # noqa: BLE001
         logger.exception("Ошибка обобщения Reddit (Tavily)")
@@ -450,15 +506,15 @@ def build_tool(
             summary = await summarize_thread(thread_text, context)
         except LLMError as exc:
             logger.warning("Reddit-обобщение не выполнено: %s", exc)
-            return (
-                f"Reddit-тред: {thread.title or 'без названия'}\n"
-                f"URL: {target}\n"
-                f"Комментариев: {len(thread.comments)}\n\n"
-                "Обобщение не удалось: модель перегружена. Не вызывай "
-                "read_thread повторно и не заменяй обсуждение результатами "
-                "web_search — честно скажи, что тред сейчас не удалось "
-                "обобщить."
+            fallback = _extractive_fallback(
+                thread, target, reason=_llm_failure_reason(exc)
             )
+            logger.info(
+                "Reddit extractive fallback: comments=%s chars=%s",
+                len(thread.comments),
+                len(fallback),
+            )
+            return fallback
         except Exception:  # noqa: BLE001
             logger.exception("Ошибка обобщения Reddit")
             return "Не удалось обобщить Reddit-тред."
