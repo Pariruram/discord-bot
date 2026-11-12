@@ -91,6 +91,19 @@ class BrokenCounter:
         raise RuntimeError("страница вернула HTTP 429")
 
 
+class FakeExtractor:
+    def __init__(self, text: str = "", error: Exception | None = None) -> None:
+        self.text = text
+        self.error = error
+        self.calls: list[str] = []
+
+    async def __call__(self, url: str) -> str:
+        self.calls.append(url)
+        if self.error is not None:
+            raise self.error
+        return self.text
+
+
 class FakeLLM:
     def __init__(self, summary: str = "Краткое обобщение.") -> None:
         self.summary = summary
@@ -236,6 +249,63 @@ async def test_recent_failure_is_not_retried() -> None:
     assert "RSS недоступен" in first
     assert "RSS недоступен" in second
     # Two hosts on the first attempt, zero requests during the failure TTL.
+    assert len(fetcher.calls) == 2
+
+
+async def test_tavily_fallback_when_rss_fails() -> None:
+    fetcher = BrokenCounter()
+    extractor = FakeExtractor("Обсуждение " * 300)
+    tool = build_tool(
+        fetcher, extractor=extractor, min_interval=0, failure_ttl=0
+    )
+    ctx = context(FakeLLM("Краткое обобщение."))
+
+    result = await tool.handler(ctx, URL)
+
+    assert "Краткое обобщение." in result
+    assert "Tavily Extract" in result
+    assert extractor.calls == [URL]
+    assert len(fetcher.calls) == 2
+
+
+async def test_tavily_short_text_is_rejected() -> None:
+    fetcher = BrokenCounter()
+    extractor = FakeExtractor("слишком коротко")
+    tool = build_tool(
+        fetcher, extractor=extractor, min_interval=0, failure_ttl=0
+    )
+
+    result = await tool.handler(context(FakeLLM()), URL)
+
+    assert "RSS недоступен" in result
+    assert extractor.calls == [URL]
+
+
+async def test_tavily_extract_error_falls_back_to_message() -> None:
+    fetcher = BrokenCounter()
+    extractor = FakeExtractor(error=RuntimeError("403"))
+    tool = build_tool(
+        fetcher, extractor=extractor, min_interval=0, failure_ttl=0
+    )
+
+    result = await tool.handler(context(FakeLLM()), URL)
+
+    assert "RSS недоступен" in result
+    assert extractor.calls == [URL]
+
+
+async def test_tavily_text_is_cached_between_calls() -> None:
+    fetcher = BrokenCounter()
+    extractor = FakeExtractor("Обсуждение " * 300)
+    tool = build_tool(
+        fetcher, extractor=extractor, min_interval=0, failure_ttl=0
+    )
+    ctx = context(FakeLLM("Краткое обобщение."))
+
+    await tool.handler(ctx, URL)
+    await tool.handler(ctx, URL)
+
+    assert extractor.calls == [URL]
     assert len(fetcher.calls) == 2
 
 

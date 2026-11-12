@@ -65,6 +65,7 @@ Pytest: `asyncio_mode=auto`, тесты без сети и Discord. Все вн�
 - `fetch_url`: SSRF-защита, до 3 MB, текст до 6000; YouTube-субтитры.
 - `read_thread`: Reddit RSS, `.json` отдаёт 403, адаптивное резюме.
   Хосты `www.reddit.com` → `www.redditmedia.com`, кэш тредов 1 час.
+  При отказе RSS — Tavily Extract, если задан `TAVILY_API_KEY`.
 - `draw_svg`: SVG через отдельный вызов, `defusedxml`, `resvg`; `pixel` — native SVG.
 - `web_search`: Tavily, даты, 1–10 результатов.
 - `current_time`: время/дата.

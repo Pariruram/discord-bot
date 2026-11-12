@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -33,6 +34,8 @@ CACHE_TTL_SECONDS = 3600.0
 FAILURE_TTL_SECONDS = 60.0
 MIN_FETCH_INTERVAL_SECONDS = 3.0
 MAX_CACHED_THREADS = 64
+TAVILY_MIN_CHARS = 1000
+TAVILY_MAX_CHARS = 80_000
 REDDIT_CONTENT_TYPES = {
     "application/atom+xml",
     "application/rss+xml",
@@ -42,7 +45,7 @@ REDDIT_CONTENT_TYPES = {
 }
 
 DESCRIPTION = (
-    "Читает Reddit-тред целиком через RSS и делает обобщение обсуждения. "
+    "Читает Reddit-тред и делает обобщение обсуждения. "
     "Используй для ссылок reddit.com/r/.../comments/... когда нужен пересказ "
     "комментариев, а не только заголовок. Для обычных статей используй "
     "fetch_url, для веб-поиска — web_search."
@@ -239,6 +242,7 @@ async def summarize_thread(text: str, context: ToolContext) -> str:
 
 
 Fetcher = Callable[..., Awaitable[Any]]
+Extractor = Callable[[str], Awaitable[str]]
 
 
 def _unavailable_message(url: str) -> str:
@@ -251,15 +255,47 @@ def _unavailable_message(url: str) -> str:
     )
 
 
+async def _summarize_extracted(
+    target: str, text: str, context: ToolContext
+) -> str:
+    try:
+        summary = await summarize_thread(text, context)
+    except LLMError as exc:
+        logger.warning("Reddit-обобщение Tavily не выполнено: %s", exc)
+        return (
+            f"Reddit-тред: {thread_label(target)}\n"
+            f"URL: {target}\n\n"
+            "Текст получен через Tavily Extract, но обобщить его не удалось: "
+            "модель перегружена. Не вызывай read_thread повторно и не "
+            "заменяй обсуждение результатами web_search — честно скажи, что "
+            "тред сейчас не удалось обобщить."
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Ошибка обобщения Reddit (Tavily)")
+        return "Не удалось обобщить Reddit-тред."
+
+    if not summary.strip():
+        return "Модель не вернула обобщение Reddit-треда."
+
+    return (
+        f"Reddit-тред: {thread_label(target)}\n"
+        f"URL: {target}\n"
+        "Источник: Tavily Extract (RSS недоступен).\n\n"
+        f"{summary}"
+    )
+
+
 def build_tool(
     fetcher: Fetcher | None = None,
     *,
+    extractor: Extractor | None = None,
     min_interval: float = 0.0,
     cache_ttl: float = CACHE_TTL_SECONDS,
     failure_ttl: float = FAILURE_TTL_SECONDS,
 ) -> Tool:
     fetch = fetcher or _http_fetch
     cache: dict[str, tuple[float, RedditThread]] = {}
+    extracted_cache: dict[str, tuple[float, str]] = {}
     failures: dict[str, float] = {}
     last_fetch_at = 0.0
     fetch_lock = asyncio.Lock()
@@ -279,6 +315,24 @@ def build_tool(
             oldest = min(cache, key=lambda key: cache[key][0])
             cache.pop(oldest, None)
         cache[url] = (time.monotonic() + cache_ttl, thread)
+
+    def cached_extract(url: str) -> str | None:
+        entry = extracted_cache.get(url)
+        if entry is None:
+            return None
+        expires_at, text = entry
+        if time.monotonic() >= expires_at:
+            extracted_cache.pop(url, None)
+            return None
+        return text
+
+    def cache_extract(url: str, text: str) -> None:
+        if len(extracted_cache) >= MAX_CACHED_THREADS:
+            oldest = min(
+                extracted_cache, key=lambda key: extracted_cache[key][0]
+            )
+            extracted_cache.pop(oldest, None)
+        extracted_cache[url] = (time.monotonic() + cache_ttl, text)
 
     def failure_active(url: str) -> bool:
         until = failures.get(url)
@@ -317,6 +371,29 @@ def build_tool(
             raise last_error
         raise RuntimeError("нет RSS-адресов Reddit")
 
+    async def extract_thread(target: str) -> str | None:
+        if extractor is None:
+            return None
+        cached = cached_extract(target)
+        if cached is not None:
+            logger.info("Reddit Tavily cache hit: %s", target)
+            return cached
+        try:
+            text = await extractor(target)
+        except Exception as exc:  # noqa: BLE001 - best-effort fallback
+            logger.warning("Reddit Tavily extract failed: %s", exc)
+            return None
+        text = (text or "").strip()
+        if len(text) < TAVILY_MIN_CHARS:
+            logger.warning(
+                "Reddit Tavily extract too short: chars=%s", len(text)
+            )
+            return None
+        text = text[:TAVILY_MAX_CHARS]
+        cache_extract(target, text)
+        logger.info("Reddit Tavily extract: chars=%s", len(text))
+        return text
+
     async def read_thread(context: ToolContext, url: str) -> str:
         target = find_reddit_url(url)
         if target is None:
@@ -328,21 +405,32 @@ def build_tool(
         _cite_thread(context, target)
 
         thread = cached_thread(target)
+        extracted: str | None = None
         if thread is not None:
             logger.info("Reddit cache hit: %s", target)
-        elif failure_active(target):
-            logger.info(
-                "Reddit недавно не прочитан, пропускаю запрос: %s", target
-            )
-            return _unavailable_message(target)
         else:
-            try:
-                thread = await fetch_thread(target)
-            except Exception as exc:  # noqa: BLE001 - user-facing RSS failures
-                logger.warning("Reddit RSS не прочитан: %s", exc)
-                failures[target] = time.monotonic() + failure_ttl
+            extracted = cached_extract(target)
+            if extracted is not None:
+                logger.info("Reddit Tavily cache hit: %s", target)
+            elif failure_active(target):
+                logger.info(
+                    "Reddit недавно не прочитан, пропускаю запрос: %s", target
+                )
                 return _unavailable_message(target)
-            cache_thread(target, thread)
+            else:
+                try:
+                    thread = await fetch_thread(target)
+                except Exception as exc:  # noqa: BLE001 - RSS failures
+                    logger.warning("Reddit RSS не прочитан: %s", exc)
+                    extracted = await extract_thread(target)
+                    if extracted is None:
+                        failures[target] = time.monotonic() + failure_ttl
+                        return _unavailable_message(target)
+                else:
+                    cache_thread(target, thread)
+
+        if extracted is not None:
+            return await _summarize_extracted(target, extracted, context)
 
         _cite_thread(context, target, thread.title)
 
@@ -404,5 +492,39 @@ def build_tool(
     )
 
 
+def _build_tavily_extractor() -> Extractor | None:
+    api_key = os.getenv("TAVILY_API_KEY")
+    if not api_key:
+        return None
+    try:
+        from tavily import AsyncTavilyClient
+
+        client = AsyncTavilyClient(api_key=api_key)
+    except Exception:  # noqa: BLE001 - the bot must start without Tavily
+        logger.exception("Не удалось инициализировать Tavily Extract")
+        return None
+
+    async def extract(url: str) -> str:
+        response = await client.extract(
+            urls=[url],
+            extract_depth="advanced",
+            format="text",
+        )
+        if not isinstance(response, dict):
+            return ""
+        results = response.get("results")
+        if not isinstance(results, list) or not results:
+            return ""
+        item = results[0]
+        if not isinstance(item, dict):
+            return ""
+        return str(item.get("raw_content") or "")
+
+    return extract
+
+
 def create_tool() -> Tool:
-    return build_tool(min_interval=MIN_FETCH_INTERVAL_SECONDS)
+    return build_tool(
+        extractor=_build_tavily_extractor(),
+        min_interval=MIN_FETCH_INTERVAL_SECONDS,
+    )
