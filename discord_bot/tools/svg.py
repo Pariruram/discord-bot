@@ -418,6 +418,7 @@ async def generate_svg(description: str, context: ToolContext) -> str:
             temperature=0.6,
             max_tokens=GENERATION_MAX_TOKENS,
             max_attempts=1,
+            purpose="svg_pixel" if pixel_mode else "svg",
         )
         try:
             svg = extract_svg(text)

@@ -108,6 +108,7 @@ async def extract_facts(
         max_tokens=1200,
         temperature=0.1,
         max_attempts=1,
+        purpose="worker_facts",
     )
     data = _load_json_object(text)
     if data is None:
@@ -185,6 +186,7 @@ async def summarize_session(
         max_tokens=500,
         temperature=0.2,
         max_attempts=1,
+        purpose="worker_session_summary",
     )
     return summary.strip() or previous
 
@@ -216,5 +218,6 @@ async def summarize_conversation(
         max_tokens=600,
         temperature=0.2,
         max_attempts=1,
+        purpose="worker_conversation_summary",
     )
     return summary.strip() or previous

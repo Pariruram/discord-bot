@@ -6,6 +6,7 @@ import asyncio
 import logging
 import random
 import time
+import uuid
 from typing import Any
 
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI
@@ -69,9 +70,23 @@ class LLMClient:
         max_tokens: int = 1200,
         tool_choice: str | dict[str, Any] | None = "auto",
         max_attempts: int | None = None,
+        purpose: str = "llm",
     ) -> Any:
         client = self._get_client(spec, model)
         attempts = self._max_attempts if max_attempts is None else max(1, max_attempts)
+        request_id = uuid.uuid4().hex[:8]
+        input_chars = len(str(messages))
+        logger.info(
+            "LLM start id=%s purpose=%s %s/%s msgs=%s chars=%s est_in=%s tools=%s",
+            request_id,
+            purpose,
+            spec.name,
+            model,
+            len(messages),
+            input_chars,
+            max(1, input_chars // 4),
+            len(tools or []),
+        )
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -90,13 +105,19 @@ class LLMClient:
                 response = await client.chat.completions.create(**kwargs)
                 elapsed_ms = (time.perf_counter() - started) * 1000
                 usage = getattr(response, "usage", None)
+                choice = response.choices[0] if getattr(response, "choices", None) else None
+                finish = getattr(choice, "finish_reason", "?")
                 logger.info(
-                    "LLM %s/%s %.0fms in=%s out=%s",
+                    "LLM done id=%s purpose=%s %s/%s %.0fms in=%s out=%s "
+                    "finish=%s",
+                    request_id,
+                    purpose,
                     spec.name,
                     model,
                     elapsed_ms,
                     getattr(usage, "prompt_tokens", "?"),
                     getattr(usage, "completion_tokens", "?"),
+                    finish,
                 )
                 return response
             except Exception as exc:  # noqa: BLE001 - provider SDK raises many types
@@ -104,7 +125,10 @@ class LLMClient:
                 if attempt >= attempts or not self._is_retryable(exc):
                     if getattr(exc, "status_code", None) == 429:
                         logger.warning(
-                            "LLM %s/%s rate limited, retry after %ss",
+                            "LLM rate limited id=%s purpose=%s %s/%s "
+                            "retry_after=%ss",
+                            request_id,
+                            purpose,
                             spec.name,
                             model,
                             retry_after_seconds(exc) or "?",
@@ -112,7 +136,10 @@ class LLMClient:
                     break
                 delay = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.3)
                 logger.warning(
-                    "LLM %s/%s попытка %s/%s не удалась (%s), повтор через %.1fs",
+                    "LLM retry id=%s purpose=%s %s/%s attempt=%s/%s "
+                    "error=%s delay=%.1fs",
+                    request_id,
+                    purpose,
                     spec.name,
                     model,
                     attempt,
@@ -137,11 +164,27 @@ class LLMClient:
             ErrorKind.auth,
             ErrorKind.bad_request,
         }:
-            logger.error("LLM error: %s", error)
+            logger.error(
+                "LLM error id=%s purpose=%s: %s",
+                request_id,
+                purpose,
+                error,
+            )
         elif error.kind is ErrorKind.unknown:
-            logger.error("LLM error: %s", error, exc_info=last_error)
+            logger.error(
+                "LLM error id=%s purpose=%s: %s",
+                request_id,
+                purpose,
+                error,
+                exc_info=last_error,
+            )
         else:
-            logger.warning("LLM error: %s", error)
+            logger.warning(
+                "LLM error id=%s purpose=%s: %s",
+                request_id,
+                purpose,
+                error,
+            )
         raise error from last_error
 
     async def complete_text(
@@ -149,9 +192,13 @@ class LLMClient:
         spec: ProviderSpec,
         model: str,
         messages: list[dict[str, Any]],
+        *,
+        purpose: str = "llm",
         **kwargs: Any,
     ) -> str:
-        response = await self.complete(spec, model, messages, **kwargs)
+        response = await self.complete(
+            spec, model, messages, purpose=purpose, **kwargs
+        )
         return (response.choices[0].message.content or "").strip()
 
     async def aclose(self) -> None:

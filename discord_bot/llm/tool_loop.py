@@ -83,6 +83,7 @@ async def run_tool_loop(
                 temperature=temperature,
                 max_tokens=max_tokens,
                 tool_choice=choice,
+                purpose="chat",
             )
         except LLMError as exc:
             if choice != "auto" and exc.kind is ErrorKind.bad_request:
@@ -100,6 +101,7 @@ async def run_tool_loop(
                     temperature=temperature,
                     max_tokens=max_tokens,
                     tool_choice="auto",
+                    purpose="chat",
                 )
             else:
                 raise
@@ -138,6 +140,7 @@ async def run_tool_loop(
         tools=None,
         temperature=temperature,
         max_tokens=max_tokens,
+        purpose="chat_final",
     )
     content = getattr(final.choices[0].message, "content", None)
     return _finish(content, context, fallback)

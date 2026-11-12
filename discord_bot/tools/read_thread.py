@@ -63,6 +63,7 @@ async def _complete(
     user: str,
     *,
     max_tokens: int,
+    purpose: str = "read_thread",
 ) -> str:
     if context.llm is None or context.provider is None:
         raise RuntimeError("нет LLM-контекста")
@@ -79,6 +80,7 @@ async def _complete(
         temperature=0.3,
         max_tokens=max_tokens,
         max_attempts=1,
+        purpose=purpose,
     )
 
 
@@ -106,23 +108,31 @@ async def summarize_thread(text: str, context: ToolContext) -> str:
     """Summarize the whole thread, adapting the length to its content."""
 
     chunks = _chunks(text)
+    logger.info(
+        "Reddit summary: text_chars=%s chunks=%s", len(text), len(chunks)
+    )
     if len(chunks) == 1:
         summary = await _complete(
             context,
             SUMMARY_PROMPT,
             text,
             max_tokens=FINAL_MAX_TOKENS,
+            purpose="read_thread_final",
         )
         return summary.strip()[:MAX_SUMMARY_CHARS]
 
     partials: list[str] = []
-    for chunk in chunks:
+    for index, chunk in enumerate(chunks, start=1):
+        logger.info(
+            "Reddit chunk %s/%s chars=%s", index, len(chunks), len(chunk)
+        )
         partials.append(
             await _complete(
                 context,
                 CHUNK_PROMPT,
                 chunk,
                 max_tokens=CHUNK_MAX_TOKENS,
+                purpose=f"read_thread_chunk_{index}/{len(chunks)}",
             )
         )
     combined = "\n\n".join(
@@ -134,6 +144,7 @@ async def summarize_thread(text: str, context: ToolContext) -> str:
         SUMMARY_PROMPT,
         combined,
         max_tokens=FINAL_MAX_TOKENS,
+        purpose="read_thread_final",
     )
     return summary.strip()[:MAX_SUMMARY_CHARS]
 
@@ -169,8 +180,14 @@ def build_tool(fetcher: Fetcher | None = None) -> Tool:
         if not thread.comments:
             return "В этом Reddit-треде нет доступных комментариев."
 
+        thread_text = thread.as_text()
+        logger.info(
+            "Reddit thread comments=%s text_chars=%s",
+            len(thread.comments),
+            len(thread_text),
+        )
         try:
-            summary = await summarize_thread(thread.as_text(), context)
+            summary = await summarize_thread(thread_text, context)
         except LLMError as exc:
             logger.warning("Reddit-обобщение не выполнено: %s", exc)
             return (
