@@ -11,6 +11,7 @@ from discord_bot.discord_app.reddit import (
     parse_thread,
     thread_label,
     thread_rss_url,
+    thread_rss_urls,
 )
 from discord_bot.llm.errors import ErrorKind, LLMError
 from discord_bot.tools import read_thread as read_thread_module
@@ -60,6 +61,34 @@ class FakeFetcher:
             content_type="application/atom+xml",
             text=self.text,
         )
+
+
+class HostFailingFetcher:
+    """Succeeds for every host except the one named in ``failing_host``."""
+
+    def __init__(self, failing_host: str) -> None:
+        self.failing_host = failing_host
+        self.calls: list[str] = []
+
+    async def __call__(self, url: str, **kwargs: Any) -> FetchedPage:
+        self.calls.append(url)
+        if self.failing_host in url:
+            raise RuntimeError("страница вернула HTTP 429")
+        return FetchedPage(
+            url=url,
+            status=200,
+            content_type="application/atom+xml",
+            text=atom_feed(),
+        )
+
+
+class BrokenCounter:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def __call__(self, url: str, **kwargs: Any) -> FetchedPage:
+        self.calls.append(url)
+        raise RuntimeError("страница вернула HTTP 429")
 
 
 class FakeLLM:
@@ -132,6 +161,10 @@ def test_reddit_url_and_rss_conversion() -> None:
     assert thread_rss_url(URL) == (
         "https://www.reddit.com/r/aigamedev/comments/1xsxna4/.rss"
     )
+    assert thread_rss_urls(URL) == [
+        "https://www.reddit.com/r/aigamedev/comments/1xsxna4/.rss",
+        "https://www.redditmedia.com/r/aigamedev/comments/1xsxna4/.rss",
+    ]
     assert thread_label(URL).startswith("r/aigamedev: heres a good one")
 
 
@@ -164,6 +197,46 @@ async def test_read_thread_summarizes_and_cites() -> None:
     assert ctx.citations[0].url == URL
     assert fetcher.calls[0].endswith("/.rss")
     assert len(llm.calls) == 1
+
+
+async def test_rss_falls_back_to_media_host() -> None:
+    fetcher = HostFailingFetcher("www.reddit.com")
+    llm = FakeLLM("Краткое обобщение.")
+    ctx = context(llm)
+
+    result = await build_tool(fetcher, min_interval=0).handler(ctx, URL)
+
+    assert "Краткое обобщение." in result
+    assert fetcher.calls[0].startswith("https://www.reddit.com/")
+    assert fetcher.calls[1].startswith("https://www.redditmedia.com/")
+    assert ctx.citations[0].url == URL
+
+
+async def test_cached_thread_skips_the_second_fetch() -> None:
+    fetcher = FakeFetcher()
+    llm = FakeLLM("Краткое обобщение.")
+    tool = build_tool(fetcher, min_interval=0)
+    ctx = context(llm)
+
+    await tool.handler(ctx, URL)
+    await tool.handler(ctx, URL)
+
+    assert len(fetcher.calls) == 1
+    assert len(llm.calls) == 2
+
+
+async def test_recent_failure_is_not_retried() -> None:
+    fetcher = BrokenCounter()
+    tool = build_tool(fetcher, min_interval=0, failure_ttl=60)
+    ctx = context(FakeLLM())
+
+    first = await tool.handler(ctx, URL)
+    second = await tool.handler(ctx, URL)
+
+    assert "RSS недоступен" in first
+    assert "RSS недоступен" in second
+    # Two hosts on the first attempt, zero requests during the failure TTL.
+    assert len(fetcher.calls) == 2
 
 
 async def test_long_thread_is_summarized_in_chunks() -> None:

@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 from discord_bot.citations import Citation
 from discord_bot.discord_app.reddit import (
+    RedditThread,
     find_reddit_url,
     parse_thread,
     thread_label,
-    thread_rss_url,
+    thread_rss_urls,
 )
 from discord_bot.llm.errors import ErrorKind, LLMError
 from discord_bot.tools.base import Tool, ToolContext
@@ -26,6 +29,10 @@ MAX_CHUNKS = 3
 CHUNK_MAX_TOKENS = 1200
 FINAL_MAX_TOKENS = 2000
 RETRY_DELAY_SECONDS = 2.5
+CACHE_TTL_SECONDS = 3600.0
+FAILURE_TTL_SECONDS = 60.0
+MIN_FETCH_INTERVAL_SECONDS = 3.0
+MAX_CACHED_THREADS = 64
 REDDIT_CONTENT_TYPES = {
     "application/atom+xml",
     "application/rss+xml",
@@ -234,36 +241,108 @@ async def summarize_thread(text: str, context: ToolContext) -> str:
 Fetcher = Callable[..., Awaitable[Any]]
 
 
-def build_tool(fetcher: Fetcher | None = None) -> Tool:
+def _unavailable_message(url: str) -> str:
+    return (
+        "Не удалось прочитать Reddit-тред: Reddit временно ограничил "
+        f"запросы или RSS недоступен.\nURL: {url}\n"
+        "Не вызывай read_thread повторно и не заменяй обсуждение "
+        "результатами web_search — честно скажи, что тред сейчас "
+        "не удалось прочитать."
+    )
+
+
+def build_tool(
+    fetcher: Fetcher | None = None,
+    *,
+    min_interval: float = 0.0,
+    cache_ttl: float = CACHE_TTL_SECONDS,
+    failure_ttl: float = FAILURE_TTL_SECONDS,
+) -> Tool:
     fetch = fetcher or _http_fetch
+    cache: dict[str, tuple[float, RedditThread]] = {}
+    failures: dict[str, float] = {}
+    last_fetch_at = 0.0
+    fetch_lock = asyncio.Lock()
+
+    def cached_thread(url: str) -> RedditThread | None:
+        entry = cache.get(url)
+        if entry is None:
+            return None
+        expires_at, thread = entry
+        if time.monotonic() >= expires_at:
+            cache.pop(url, None)
+            return None
+        return thread
+
+    def cache_thread(url: str, thread: RedditThread) -> None:
+        if len(cache) >= MAX_CACHED_THREADS:
+            oldest = min(cache, key=lambda key: cache[key][0])
+            cache.pop(oldest, None)
+        cache[url] = (time.monotonic() + cache_ttl, thread)
+
+    def failure_active(url: str) -> bool:
+        until = failures.get(url)
+        if until is None:
+            return False
+        if time.monotonic() >= until:
+            failures.pop(url, None)
+            return False
+        return True
+
+    async def throttle() -> None:
+        nonlocal last_fetch_at
+        async with fetch_lock:
+            wait = min_interval - (time.monotonic() - last_fetch_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            last_fetch_at = time.monotonic()
+
+    async def fetch_thread(target: str) -> RedditThread:
+        last_error: Exception | None = None
+        for rss_url in thread_rss_urls(target):
+            host = urlsplit(rss_url).hostname or rss_url
+            await throttle()
+            try:
+                page = await fetch(
+                    rss_url, allowed_types=REDDIT_CONTENT_TYPES
+                )
+                thread = parse_thread(page.text, target)
+            except Exception as exc:  # noqa: BLE001 - try the next RSS host
+                logger.warning("Reddit RSS %s не прочитан: %s", host, exc)
+                last_error = exc
+                continue
+            logger.info("Reddit RSS прочитан через %s", host)
+            return thread
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("нет RSS-адресов Reddit")
 
     async def read_thread(context: ToolContext, url: str) -> str:
         target = find_reddit_url(url)
         if target is None:
             return "Это не похоже на ссылку Reddit-треда."
-        rss_url = thread_rss_url(target)
-        if rss_url is None:
+        if not thread_rss_urls(target):
             return "Не удалось разобрать ссылку Reddit."
 
         # Cite the original thread even if reading or summarizing fails.
         _cite_thread(context, target)
 
-        try:
-            page = await fetch(
-                rss_url, allowed_types=REDDIT_CONTENT_TYPES
+        thread = cached_thread(target)
+        if thread is not None:
+            logger.info("Reddit cache hit: %s", target)
+        elif failure_active(target):
+            logger.info(
+                "Reddit недавно не прочитан, пропускаю запрос: %s", target
             )
-            thread = parse_thread(page.text, target)
-        except LLMError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - user-facing RSS failures
-            logger.warning("Reddit RSS не прочитан: %s", exc)
-            return (
-                f"Не удалось прочитать Reddit-тред: RSS недоступен или "
-                f"Reddit заблокировал запрос.\nURL: {target}\n"
-                "Не вызывай read_thread повторно и не заменяй обсуждение "
-                "результатами web_search — честно скажи, что тред сейчас "
-                "не удалось прочитать."
-            )
+            return _unavailable_message(target)
+        else:
+            try:
+                thread = await fetch_thread(target)
+            except Exception as exc:  # noqa: BLE001 - user-facing RSS failures
+                logger.warning("Reddit RSS не прочитан: %s", exc)
+                failures[target] = time.monotonic() + failure_ttl
+                return _unavailable_message(target)
+            cache_thread(target, thread)
 
         _cite_thread(context, target, thread.title)
 
@@ -326,4 +405,4 @@ def build_tool(fetcher: Fetcher | None = None) -> Tool:
 
 
 def create_tool() -> Tool:
-    return build_tool()
+    return build_tool(min_interval=MIN_FETCH_INTERVAL_SECONDS)

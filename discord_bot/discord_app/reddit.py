@@ -53,14 +53,24 @@ def find_reddit_url(text: str | None) -> str | None:
     return match.group(0).rstrip(".,;!?)")
 
 
-def thread_rss_url(url: str) -> str | None:
+def thread_rss_urls(url: str) -> list[str]:
+    """RSS hosts for a thread: canonical Reddit plus its media CDN alias."""
+
     match = REDDIT_THREAD_RE.search(url or "")
     if match is None:
-        return None
-    return (
-        f"https://www.reddit.com/r/{match.group('sub')}/"
-        f"comments/{match.group('id')}/.rss"
+        return []
+    path = (
+        f"r/{match.group('sub')}/comments/{match.group('id')}/.rss"
     )
+    return [
+        f"https://www.reddit.com/{path}",
+        f"https://www.redditmedia.com/{path}",
+    ]
+
+
+def thread_rss_url(url: str) -> str | None:
+    urls = thread_rss_urls(url)
+    return urls[0] if urls else None
 
 
 def thread_label(url: str) -> str:
