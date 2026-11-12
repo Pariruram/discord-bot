@@ -86,6 +86,51 @@ async def test_tool_call_is_executed_and_answered() -> None:
     assert tool_messages[0]["tool_call_id"] == "call-1"
 
 
+async def test_duplicate_tool_call_is_not_executed_twice() -> None:
+    registry = ToolRegistry(timeout=1.0)
+    executed: list[int] = []
+
+    async def count(context: ToolContext, value: int = 0) -> str:
+        executed.append(value)
+        return f"result-{value}"
+
+    registry.register(
+        Tool(
+            name="count",
+            description="count",
+            parameters={
+                "type": "object",
+                "properties": {"value": {"type": "integer"}},
+                "required": ["value"],
+            },
+            handler=count,
+        )
+    )
+    llm = FakeLLM(
+        [
+            response(
+                tool_calls=[
+                    tool_call("call-1", "count", '{"value": 1}'),
+                    tool_call("call-2", "count", ' { "value" : 1 } '),
+                ]
+            ),
+            response(content="done"),
+        ]
+    )
+    messages: list[dict] = []
+
+    result = await run_tool_loop(
+        llm, SPEC, MODEL_REF, messages, registry, ["count"], CONTEXT
+    )
+
+    assert result == "done"
+    assert executed == [1]
+    tool_messages = [item for item in messages if item["role"] == "tool"]
+    assert len(tool_messages) == 2
+    assert tool_messages[0]["content"] == "result-1"
+    assert "Повторный вызов" in tool_messages[1]["content"]
+
+
 async def test_unknown_tool_still_gets_a_tool_response() -> None:
     llm = FakeLLM(
         [

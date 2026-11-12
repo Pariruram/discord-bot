@@ -167,6 +167,30 @@ async def test_blank_query_is_rejected() -> None:
     assert search.calls == []
 
 
+async def test_site_only_query_is_rejected_before_search() -> None:
+    search = FakeSearch()
+
+    response = await build_tool(search).handler(
+        context(), "site:reddit.com site:old.reddit.com"
+    )
+
+    assert "только из site:" in response
+    assert search.calls == []
+
+
+async def test_search_backend_error_is_user_facing() -> None:
+    class Broken:
+        async def __call__(self, **kwargs: Any) -> dict[str, Any]:
+            raise RuntimeError(
+                "Query cannot consist only of site: operators."
+            )
+
+    response = await build_tool(Broken()).handler(context(), "reddit thread")
+
+    assert "Поиск не выполнен" in response
+    assert "site:" in response
+
+
 async def test_multiple_stale_years_in_a_news_query_are_rejected() -> None:
     search = FakeSearch()
     current = datetime.now(UTC).year

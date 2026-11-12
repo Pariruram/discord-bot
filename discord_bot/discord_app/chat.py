@@ -22,7 +22,7 @@ from discord_bot.discord_app.links import (
     format_link_block,
     urls_to_prefetch,
 )
-from discord_bot.discord_app.reddit import find_reddit_url
+from discord_bot.discord_app.reddit import find_reddit_url, thread_label
 from discord_bot.discord_app.svg_input import collect_source_svg
 from discord_bot.llm.client import LLMClient, LLMError
 from discord_bot.llm.models import resolve_model_ref
@@ -286,6 +286,12 @@ class ChatService:
                 force_pixel_grid=pixel_grid,
                 pixel_palette=palette_name,
             )
+            if reddit_url:
+                # The thread is the user's primary source: reserve the first
+                # citation slot before search results can fill the footer.
+                tool_context.citations.append(
+                    Citation(title=thread_label(reddit_url), url=reddit_url)
+                )
             for link in link_results:
                 tool_context.citations.append(
                     Citation(title=link.title, url=link.url)
@@ -347,7 +353,11 @@ class ChatService:
                     f"{messages[0]['content']}\n\n"
                     "<thread_request>Пользователь прислал Reddit-тред. "
                     f"Вызови read_thread с url={reddit_url}; не используй "
-                    "fetch_url для этой ссылки. Затем ответь по summary."
+                    "fetch_url для этой ссылки. Затем ответь по summary. "
+                    "Если инструмент вернул ошибку или частичное резюме, не "
+                    "вызывай read_thread повторно и не заменяй обсуждение "
+                    "результатами web_search: ответь по полученному резюме и "
+                    "честно укажи, что часть комментариев не обработана."
                     "</thread_request>"
                 )
             if forced_tool == "draw_svg":

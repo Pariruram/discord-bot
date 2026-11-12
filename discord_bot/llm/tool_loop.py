@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,16 @@ def _serialize_tool_call(tool_call: Any) -> dict[str, Any]:
             "arguments": tool_call.function.arguments,
         },
     }
+
+
+def _call_key(name: str, raw_args: str) -> tuple[str, str]:
+    """Normalise a tool call so the same request is detected reliably."""
+
+    try:
+        parsed = json.loads(raw_args or "{}")
+    except (TypeError, ValueError):
+        return name, raw_args or ""
+    return name, json.dumps(parsed, sort_keys=True, ensure_ascii=False)
 
 
 def _finish(
@@ -65,6 +76,7 @@ async def run_tool_loop(
     """
 
     tool_schemas = registry.schemas(enabled_tools) or None
+    seen_calls: set[tuple[str, str]] = set()
 
     for round_index in range(max(1, max_rounds)):
         choice: str | dict[str, Any] = "auto"
@@ -121,8 +133,31 @@ async def run_tool_loop(
 
         for tool_call in tool_calls:
             name = tool_call.function.name
+            raw_args = getattr(tool_call.function, "arguments", "") or ""
+            key = _call_key(name, raw_args)
+            if key in seen_calls:
+                logger.warning(
+                    "Повторный вызов инструмента %s с теми же аргументами "
+                    "пропущен",
+                    name,
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": getattr(tool_call, "id", ""),
+                        "name": name,
+                        "content": (
+                            f"Повторный вызов {name} с теми же аргументами "
+                            "не выполнен: инструмент уже вызывался в этом "
+                            "ответе. Используй уже полученный результат и не "
+                            "вызывай его снова."
+                        ),
+                    }
+                )
+                continue
+            seen_calls.add(key)
             logger.info("Вызов инструмента: %s", name)
-            result = await registry.execute(name, tool_call.function.arguments, context)
+            result = await registry.execute(name, raw_args, context)
             messages.append(
                 {
                     "role": "tool",

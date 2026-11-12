@@ -63,6 +63,22 @@ def thread_rss_url(url: str) -> str | None:
     )
 
 
+def thread_label(url: str) -> str:
+    """Short human-readable citation label for a Reddit thread URL."""
+
+    match = REDDIT_THREAD_RE.search(url or "")
+    if match is None:
+        return "Reddit thread"
+    slug = re.search(
+        r"/comments/[a-z0-9]+/([^/?#\s]+)", url or "", re.IGNORECASE
+    )
+    if slug:
+        words = slug.group(1).replace("_", " ").strip()
+        if words:
+            return f"r/{match.group('sub')}: {words}"
+    return f"r/{match.group('sub')} thread"
+
+
 def _entry_text(entry: Any) -> str:
     content = entry.find(f"{ATOM}content")
     if content is None:

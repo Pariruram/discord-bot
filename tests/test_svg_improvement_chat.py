@@ -6,6 +6,7 @@ from typing import Any
 
 import discord
 
+from discord_bot.citations import Citation
 from discord_bot.discord_app import chat as chat_module
 from discord_bot.discord_app.chat import ChatService
 from discord_bot.memory.models import IngestResult
@@ -256,3 +257,53 @@ async def test_reddit_link_forces_read_thread(monkeypatch) -> None:
     }
     assert "thread_request" in llm.messages[0]["content"]
     assert memory.recorded is not None
+
+
+async def test_reddit_source_stays_first_when_the_tool_fails(monkeypatch) -> None:
+    url = (
+        "https://www.reddit.com/r/aigamedev/comments/1xsxna4/"
+        "heres_a_good_one_for_the_code_is_okay_but_you/"
+    )
+    chat, memory, _, _ = build(
+        monkeypatch,
+        [
+            response(
+                tool_calls=[
+                    tool_call("read_thread", json.dumps({"url": url}))
+                ]
+            ),
+            response(content="Не удалось обобщить тред."),
+        ],
+    )
+
+    class FailingRegistry(FakeRegistry):
+        async def execute(self, name, raw_args, context):
+            self.contexts.append(context)
+            if name == "read_thread":
+                context.citations.append(
+                    Citation(
+                        title="Search result",
+                        url="https://example.com/search",
+                    )
+                )
+                return "Не удалось прочитать Reddit-тред: RSS недоступен."
+            return "drawn"
+
+    chat.registry = FailingRegistry()
+    sent: list[str] = []
+    message = dm(url)
+
+    async def capture(text: str, **kwargs: Any) -> None:
+        sent.append(text)
+
+    message.reply = capture
+
+    await chat._handle(message)
+
+    assert memory.recorded is not None
+    reply, metadata = memory.recorded
+    urls = [item["url"] for item in metadata["citations"]]
+    assert urls == [url, "https://example.com/search"]
+    assert url in sent[0]
+    assert sent[0].index(url) < sent[0].index("https://example.com/search")
+    assert reply == "Не удалось обобщить тред."

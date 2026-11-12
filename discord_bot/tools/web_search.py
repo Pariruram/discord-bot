@@ -77,6 +77,16 @@ def _parse_date(value: str | None, field: str) -> str | None:
     return text
 
 
+def _only_site_operators(query: str) -> bool:
+    """Tavily rejects queries that contain nothing but site: filters."""
+
+    tokens = query.split()
+    return bool(tokens) and all(
+        token.lower().startswith("site:") and len(token) > len("site:")
+        for token in tokens
+    )
+
+
 def _stale_date_error(query: str) -> str | None:
     """Reject obviously stale years in a news query before spending a credit."""
 
@@ -117,6 +127,11 @@ def build_tool(search: SearchFn | None) -> Tool:
         cleaned = " ".join(str(query or "").split())
         if not cleaned:
             return "Поиск не выполнен: пустой запрос."
+        if _only_site_operators(cleaned):
+            return (
+                "Поиск не выполнен: запрос состоит только из site:. Добавь "
+                "ключевые слова, например: site:reddit.com Saltline отзывы."
+            )
 
         default_results = safe_int(
             context.settings.get("search_max_results"),
@@ -176,7 +191,16 @@ def build_tool(search: SearchFn | None) -> Tool:
         if period or start or end:
             kwargs["filter_by_published_date"] = True
 
-        response = await search(**kwargs)
+        try:
+            response = await search(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - Tavily raises its own errors
+            detail = " ".join(str(exc).split())
+            logger.warning("Веб-поиск не выполнен: %s", detail)
+            return (
+                f"Поиск не выполнен: {detail}"
+                if detail
+                else "Поиск не выполнен: сервис вернул ошибку."
+            )
         results = response.get("results")
         if not isinstance(results, list) or not results:
             return "Поиск не дал результатов."
