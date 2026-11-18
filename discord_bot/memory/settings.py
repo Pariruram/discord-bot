@@ -22,6 +22,7 @@ def _int(
 @dataclass(frozen=True, slots=True)
 class MemorySettings:
     enabled: bool = True
+    image_memory_enabled: bool = True
     retention_days: int = 365
     max_facts_per_user: int = 200
     max_context_facts: int = 20
@@ -42,6 +43,9 @@ class MemorySettings:
 
         return cls(
             enabled=as_bool(settings.get("memory_enabled"), True),
+            image_memory_enabled=as_bool(
+                settings.get("image_memory_enabled"), True
+            ),
             retention_days=_int(
                 settings, "memory_retention_days", 365, minimum=1, maximum=3650
             ),

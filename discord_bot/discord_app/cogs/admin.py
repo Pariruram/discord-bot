@@ -52,6 +52,7 @@ ALLOWED_SETTINGS = {
     "enabled_tools",
     "global_system_prompt",
     "memory_enabled",
+    "image_memory_enabled",
     "memory_retention_days",
     "max_facts_per_user",
     "max_context_facts",
@@ -276,7 +277,12 @@ class AdminCog(commands.Cog, name="admin"):
             await self.services.settings.set(key, str(number))
             return await ctx.send(f"`{key}` изменен на `{number}`.")
 
-        if key == "memory_enabled" or key == "debug_mode" or key == "auto_links":
+        if key in {
+            "memory_enabled",
+            "image_memory_enabled",
+            "debug_mode",
+            "auto_links",
+        }:
             lowered = value.lower()
             if lowered not in {"true", "false", "1", "0", "on", "off", "yes", "no"}:
                 return await ctx.send("Ожидается `true` или `false`.")

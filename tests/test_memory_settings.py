@@ -7,6 +7,7 @@ def test_defaults_do_not_require_new_env_vars() -> None:
     cfg = MemorySettings.from_mapping({})
 
     assert cfg.enabled is True
+    assert cfg.image_memory_enabled is True
     assert cfg.retention_days == 365
     assert cfg.max_facts_per_user == 200
     assert cfg.max_context_facts == 20
@@ -23,6 +24,7 @@ def test_values_are_read_from_bot_settings() -> None:
     cfg = MemorySettings.from_mapping(
         {
             "memory_enabled": "false",
+            "image_memory_enabled": "false",
             "memory_retention_days": "30",
             "max_facts_per_user": "50",
             "max_context_facts": "12",
@@ -37,6 +39,7 @@ def test_values_are_read_from_bot_settings() -> None:
     )
 
     assert cfg.enabled is False
+    assert cfg.image_memory_enabled is False
     assert cfg.retention_days == 30
     assert cfg.max_facts_per_user == 50
     assert cfg.max_context_facts == 12

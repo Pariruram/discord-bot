@@ -13,6 +13,7 @@ from discord_bot.discord_app.images import (
     attach_images,
     collect_image_parts,
 )
+from discord_bot.llm.errors import ErrorKind, LLMError
 from discord_bot.memory.models import IngestResult
 
 
@@ -164,8 +165,11 @@ def test_attach_images_without_parts_keeps_the_content() -> None:
 
 
 class FakeSettings:
+    def __init__(self, values: dict[str, str] | None = None) -> None:
+        self.values = values or {}
+
     async def get_all(self) -> dict[str, str]:
-        return {}
+        return self.values
 
 
 class FakeMemory:
@@ -216,6 +220,8 @@ class FakeRegistry:
 class FakeLLM:
     def __init__(self) -> None:
         self.messages: list[dict[str, Any]] | None = None
+        self.image_messages: list[dict[str, Any]] | None = None
+        self.fail_images = False
 
     async def complete(
         self,
@@ -233,15 +239,26 @@ class FakeLLM:
             ]
         )
 
+    async def complete_text(
+        self,
+        spec: Any,
+        model: str,
+        messages: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> str:
+        if self.fail_images:
+            raise LLMError(
+                provider="gemini",
+                model=model,
+                status_code=503,
+                kind=ErrorKind.provider_unavailable,
+                detail="busy",
+            )
+        self.image_messages = messages
+        return "На картинке кот."
 
-async def test_chat_sends_the_image_and_stores_only_a_note(monkeypatch) -> None:
-    memory = FakeMemory()
-    llm = FakeLLM()
-    bot = SimpleNamespace(
-        user=SimpleNamespace(id=999, mentioned_in=lambda item: False)
-    )
-    chat = ChatService(bot, FakeSettings(), memory, llm, FakeRegistry())
 
+def patch_providers(monkeypatch) -> None:
     monkeypatch.setattr(
         chat_module,
         "build_providers",
@@ -255,14 +272,16 @@ async def test_chat_sends_the_image_and_stores_only_a_note(monkeypatch) -> None:
         ),
     )
 
+
+def dm_message(content: str = "что тут?") -> tuple[SimpleNamespace, list[str]]:
     sent: list[str] = []
 
     async def _reply(text: str, **kwargs: Any) -> None:
         sent.append(text)
 
-    dm = SimpleNamespace(
+    message = SimpleNamespace(
         id=43,
-        content="что тут?",
+        content=content,
         channel=SimpleNamespace(
             type=discord.ChannelType.private, id=444, parent_id=None
         ),
@@ -271,14 +290,110 @@ async def test_chat_sends_the_image_and_stores_only_a_note(monkeypatch) -> None:
         attachments=[FakeAttachment()],
         reply=_reply,
     )
+    return message, sent
 
-    await chat._handle(dm)
+
+def channel_message(content: str = "смотрите") -> SimpleNamespace:
+    async def _reply(text: str, **kwargs: Any) -> None:
+        return None
+
+    return SimpleNamespace(
+        id=45,
+        content=content,
+        channel=SimpleNamespace(
+            type=discord.ChannelType.text, id=555, parent_id=None
+        ),
+        guild=SimpleNamespace(id=777),
+        author=SimpleNamespace(id=111, display_name="Аня", name="anya", bot=False),
+        attachments=[FakeAttachment()],
+        reply=_reply,
+    )
+
+
+async def test_chat_sends_the_image_and_stores_a_description(monkeypatch) -> None:
+    memory = FakeMemory()
+    llm = FakeLLM()
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=999, mentioned_in=lambda item: False)
+    )
+    chat = ChatService(bot, FakeSettings(), memory, llm, FakeRegistry())
+    patch_providers(monkeypatch)
+    message, sent = dm_message()
+
+    await chat._handle(message)
+
+    assert memory.ingested_content is not None
+    assert memory.ingested_content.startswith(
+        "[описание изображения: На картинке кот.]"
+    )
+    assert "[изображение: cat.png]" in memory.ingested_content
+    assert "что тут?" in memory.ingested_content
+    assert memory.recorded is not None
+    assert sent == ["Это кот."]
+    assert llm.image_messages is not None
+    assert llm.messages is not None
+    content = llm.messages[-1]["content"]
+    assert isinstance(content, list)
+    assert content[0]["text"] == memory.ingested_content
+    assert content[1]["type"] == "image_url"
+
+
+async def test_ambient_image_in_allowed_channel_is_described(
+    monkeypatch,
+) -> None:
+    memory = FakeMemory()
+    llm = FakeLLM()
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=999, mentioned_in=lambda item: False)
+    )
+    settings = FakeSettings({"allowed_channel_ids": '["555"]'})
+    chat = ChatService(bot, settings, memory, llm, FakeRegistry())
+    patch_providers(monkeypatch)
+
+    await chat._handle(channel_message())
+
+    assert memory.ingested_content is not None
+    assert "описание изображения" in memory.ingested_content
+    assert "На картинке кот." in memory.ingested_content
+    assert llm.image_messages is not None
+    assert llm.messages is None
+    assert memory.recorded is None
+
+
+async def test_image_memory_can_be_disabled(monkeypatch) -> None:
+    memory = FakeMemory()
+    llm = FakeLLM()
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=999, mentioned_in=lambda item: False)
+    )
+    settings = FakeSettings({"image_memory_enabled": "false"})
+    chat = ChatService(bot, settings, memory, llm, FakeRegistry())
+    patch_providers(monkeypatch)
+    message, sent = dm_message()
+
+    await chat._handle(message)
+
+    assert memory.ingested_content == "что тут?\n[изображение: cat.png]"
+    assert llm.image_messages is None
+    assert memory.recorded is not None
+    assert sent == ["Это кот."]
+
+
+async def test_image_description_failure_does_not_break_the_turn(
+    monkeypatch,
+) -> None:
+    memory = FakeMemory()
+    llm = FakeLLM()
+    llm.fail_images = True
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=999, mentioned_in=lambda item: False)
+    )
+    chat = ChatService(bot, FakeSettings(), memory, llm, FakeRegistry())
+    patch_providers(monkeypatch)
+    message, sent = dm_message()
+
+    await chat._handle(message)
 
     assert memory.ingested_content == "что тут?\n[изображение: cat.png]"
     assert memory.recorded is not None
     assert sent == ["Это кот."]
-    assert llm.messages is not None
-    content = llm.messages[-1]["content"]
-    assert isinstance(content, list)
-    assert content[0]["text"] == "что тут?\n[изображение: cat.png]"
-    assert content[1]["type"] == "image_url"

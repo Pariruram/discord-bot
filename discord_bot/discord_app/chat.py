@@ -16,6 +16,9 @@ from discord.ext import commands
 
 from discord_bot.citations import Citation, format_sources
 from discord_bot.discord_app.addressing import classify_message
+from discord_bot.discord_app.image_memory import (
+    describe_images as describe_images_for_memory,
+)
 from discord_bot.discord_app.images import attach_images, collect_image_parts
 from discord_bot.discord_app.links import (
     collect_previews,
@@ -209,6 +212,28 @@ class ChatService:
             for part in (user_text, image_note, source_svg.note)
             if part
         )
+        if (
+            image_parts
+            and cfg.enabled
+            and cfg.image_memory_enabled
+            and not getattr(message.author, "bot", False)
+        ):
+            description = await self._describe_images(settings, image_parts)
+            if description:
+                logger.info(
+                    "Описание изображения сохранено: chars=%s",
+                    len(description),
+                )
+                stored_text = "\n".join(
+                    part
+                    for part in (
+                        f"[описание изображения: {description}]",
+                        image_note,
+                        user_text,
+                        source_svg.note,
+                    )
+                    if part
+                )
         result = await self.memory.ingest(
             message, incoming, content=stored_text or None
         )
@@ -437,6 +462,30 @@ class ChatService:
         await self._send(message, sent, max_len, files=tool_context.files)
         if debug_mode:
             await self._send_debug(message, spec, model_ref, tool_context, stats)
+
+    async def _describe_images(
+        self, settings: dict[str, str], image_parts: list[dict[str, Any]]
+    ) -> str:
+        """Best-effort image description for the memory transcript."""
+
+        providers = build_providers(settings)
+        if not providers:
+            return ""
+        try:
+            model_ref = resolve_model_ref(settings, providers)
+        except ValueError:
+            return ""
+        spec = providers[model_ref.provider]
+        try:
+            return await describe_images_for_memory(
+                self.llm, spec, model_ref.model, image_parts
+            )
+        except LLMError as exc:
+            logger.warning("Не удалось описать изображение: %s", exc)
+            return ""
+        except Exception:  # noqa: BLE001
+            logger.exception("Ошибка описания изображения")
+            return ""
 
     async def _prefetch_links(
         self, urls: list[str]
